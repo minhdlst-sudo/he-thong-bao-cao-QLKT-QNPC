@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "report_definition": {
+      "title": "Report Definition",
+      "description": "Definition of a recurring report requirement",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string", "description": "Nội dung báo cáo" },
+        "classification": { "type": "string", "description": "Phân loại" },
+        "specialist": { "type": "string", "description": "Phụ trách" },
+        "cycle": { "type": "string", "description": "Chu kỳ" },
+        "deadline": { "type": "string", "description": "Thời hạn" },
+        "unit": { "type": "string", "description": "Đơn vị" },
+        "directingDocument": { "type": "string", "description": "Văn bản chỉ đạo" }
+      },
+      "required": ["content", "classification", "specialist", "cycle", "deadline", "unit"]
+    },
+    "report_submission": {
+      "title": "Report Submission",
+      "description": "A submitted report from a unit",
+      "type": "object",
+      "properties": {
+        "reportDefinitionId": { "type": "string", "description": "ID of the report definition" },
+        "unitName": { "type": "string", "description": "Tên đơn vị báo cáo" },
+        "dateSent": { "type": "string", "description": "Ngày gửi báo cáo" },
+        "attachmentLink": { "type": "string", "description": "Link đính kèm" },
+        "period": { "type": "string", "description": "Giá trị báo cáo (Tuần/Tháng/...)" },
+        "year": { "type": "integer", "description": "Năm báo cáo" },
+        "timestamp": { "type": "string", "description": "Thời gian cập nhật hệ thống" }
+      },
+      "required": ["reportDefinitionId", "unitName", "dateSent", "attachmentLink", "period", "year"]
+    }
+  },
+  "firestore": {
+    "report_definitions": {
+      "schema": "report_definition",
+      "description": "Collection of report requirements"
+    },
+    "report_submissions": {
+      "schema": "report_submission",
+      "description": "Collection of actual report submissions"
+    }
+  }
+}

@@ -22,6 +22,9 @@ import "react-datepicker/dist/react-datepicker.css";
 import { ReportDefinition, ReportSubmission } from "./types";
 import SummaryReport from "./components/SummaryReport";
 import ManageReports from "./components/ManageReports";
+import { auth, db } from "./firebase";
+import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { doc, getDocFromCache, getDocFromServer } from "firebase/firestore";
 
 registerLocale("vi", vi);
 
@@ -56,6 +59,33 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setIsAuthReady(true);
+      } else {
+        signInAnonymously(auth).catch(console.error);
+      }
+    });
+
+    // Test Firestore connection
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+
+    return () => unsubscribe();
+  }, []);
+
+  const isAdmin = selectedUnit?.toLowerCase().trim() === "phòng kỹ thuật" || selectedUnit?.toLowerCase().trim() === "văn thư pkt";
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -115,6 +145,14 @@ export default function App() {
       const daysToFriday = (5 - dayOfWeek + 7) % 7;
       deadlineDate.setDate(now.getDate() + daysToFriday);
       deadlineDate.setHours(23, 59, 59, 999);
+    } else if (cycle.includes("quý")) {
+      const quarter = Math.floor((currentMonth - 1) / 3) + 1;
+      periodStr = `Quý ${quarter}/${currentYear}`;
+    } else if (cycle.includes("6 tháng")) {
+      const half = currentMonth <= 6 ? "đầu" : "cuối";
+      periodStr = `6 tháng ${half} năm ${currentYear}`;
+    } else if (cycle.includes("năm")) {
+      periodStr = `Năm ${currentYear}`;
     } else {
       // Try parsing as direct date DD/MM/YYYY
       const dmyMatch = report.deadline.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -134,11 +172,15 @@ export default function App() {
     const normalizePeriod = (p: string) => {
       if (!p) return "";
       let normalized = p.toLowerCase().trim();
-      // Normalize DD/MM/YYYY by removing leading zeros
+      
+      // Handle DD/MM/YYYY specifically
       const dmyMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
       if (dmyMatch) {
         return `${parseInt(dmyMatch[1])}/${parseInt(dmyMatch[2])}/${dmyMatch[3]}`;
       }
+
+      // General normalization for numbers (e.g., "Tuần 05" -> "tuần 5")
+      normalized = normalized.replace(/\b0+(\d+)/g, '$1');
       return normalized;
     };
 
@@ -218,7 +260,7 @@ export default function App() {
   }, [selectedReport]);
 
   useEffect(() => {
-    if (currentView === "summary") {
+    if (currentView === "summary" || currentView === "manage-reports") {
       fetchAllHistory();
       fetchAllReports();
     }
@@ -239,23 +281,29 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [reportsRes, submissionsRes, historyRes] = await Promise.all([
+      const [reportsRes, submissionsRes, historyRes, allReportsRes, allHistoryRes] = await Promise.all([
         fetch(`/api/reports?unitName=${encodeURIComponent(selectedUnit!)}`),
         fetch(`/api/submissions?unitName=${encodeURIComponent(selectedUnit!)}`),
-        fetch(`/api/history?unitName=${encodeURIComponent(selectedUnit!)}`)
+        fetch(`/api/history?unitName=${encodeURIComponent(selectedUnit!)}`),
+        fetch("/api/all-reports"),
+        fetch("/api/all-history")
       ]);
       
-      if (!reportsRes.ok || !submissionsRes.ok || !historyRes.ok) {
-        const errorText = await (!reportsRes.ok ? reportsRes.text() : !submissionsRes.ok ? submissionsRes.text() : historyRes.text());
-        throw new Error(`Server error: ${errorText}`);
+      if (!reportsRes.ok || !submissionsRes.ok || !historyRes.ok || !allReportsRes.ok || !allHistoryRes.ok) {
+        throw new Error("Lỗi khi tải dữ liệu từ máy chủ.");
       }
 
       const reportsData = await reportsRes.json();
       const submissionsData = await submissionsRes.json();
       const historyData = await historyRes.json();
+      const allReportsData = await allReportsRes.json();
+      const allHistoryData = await allHistoryRes.json();
+      
       setReports(reportsData);
       setSubmissions(submissionsData);
       setHistory(historyData);
+      setAllReports(allReportsData);
+      setAllHistory(allHistoryData);
     } catch (error) {
       console.error("Error fetching data:", error);
       setMessage({ type: 'error', text: "Lỗi khi tải dữ liệu từ máy chủ. Vui lòng thử lại sau." });
@@ -316,7 +364,9 @@ export default function App() {
   const handleLogin = () => {
     if (!loginUnit) return;
 
-    if (loginUnit === "Văn thư PKT") {
+    const isPktAdmin = loginUnit?.toLowerCase().trim() === "phòng kỹ thuật" || loginUnit?.toLowerCase().trim() === "văn thư pkt";
+
+    if (isPktAdmin) {
       if (password === "pkt@2026") {
         setSelectedUnit(loginUnit);
         setLoginError("");
@@ -517,16 +567,21 @@ export default function App() {
                 value={loginUnit}
               >
                 <option value="" disabled>Chọn đơn vị của bạn...</option>
-                {units.map(unit => (
-                  <option key={unit} value={unit}>{unit}</option>
-                ))}
+                {units
+                  .filter(unit => {
+                    const lowerUnit = unit.toLowerCase().trim();
+                    return lowerUnit !== "điện lực" && lowerUnit !== "tất cả";
+                  })
+                  .map(unit => (
+                    <option key={unit} value={unit}>{unit}</option>
+                  ))}
               </select>
               <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
                 <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
               </div>
             </div>
 
-            {loginUnit === "Văn thư PKT" && (
+            {(loginUnit?.toLowerCase().trim() === "văn thư pkt" || loginUnit?.toLowerCase().trim() === "phòng kỹ thuật") && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
@@ -550,7 +605,7 @@ export default function App() {
             
             <button 
               onClick={handleLogin}
-              disabled={!loginUnit || (loginUnit === "Văn thư PKT" && !password)}
+              disabled={!loginUnit || ((loginUnit?.toLowerCase().trim() === "văn thư pkt" || loginUnit?.toLowerCase().trim() === "phòng kỹ thuật") && !password)}
               className="w-full bg-emerald-600 text-white font-semibold py-3 rounded-xl hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-600/20"
             >
               Đăng nhập
@@ -587,7 +642,7 @@ export default function App() {
               >
                 Tất cả đơn vị
               </button>
-              {selectedUnit === "Văn thư PKT" && (
+              {isAdmin && (
                 <button 
                   onClick={() => setCurrentView("manage-reports")}
                   className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'manage-reports' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
@@ -670,37 +725,42 @@ export default function App() {
                             }`}
                           >
                             <option value="">-- Chọn nội dung báo cáo --</option>
-                            {reports
-                              .filter(r => r && r.content)
-                              .filter(r => {
-                                const cycle = r.cycle?.toLowerCase() || "";
-                                const deadline = r.deadline?.toLowerCase() || "";
-                                const isPeriodic = cycle.includes("tuần") || cycle.includes("tháng") || deadline.includes("hàng tháng") || deadline.includes("thứ");
-                                
-                                if (isPeriodic) return true;
-                                
-                                const status = getReportStatus(r);
-                                return status.type !== 'submitted';
-                              })
-                              .map(r => {
-                                const cycle = r.cycle?.toLowerCase() || "";
-                                const deadline = r.deadline?.toLowerCase() || "";
-                                const isPeriodic = cycle.includes("tuần") || cycle.includes("tháng") || deadline.includes("hàng tháng") || deadline.includes("thứ");
-                                
-                                if (isPeriodic) {
+                            {reports.length > 0 ? (
+                              reports
+                                .filter(r => r && r.content)
+                                .filter(r => {
+                                  const status = getReportStatus(r);
+                                  return status.type !== 'submitted';
+                                })
+                                .map(r => {
+                                  const cycle = r.cycle?.toLowerCase() || "";
+                                  const deadline = r.deadline?.toLowerCase() || "";
+                                  const isPeriodic = 
+                                    cycle.includes("tuần") || 
+                                    cycle.includes("tháng") || 
+                                    cycle.includes("quý") || 
+                                    cycle.includes("năm") || 
+                                    cycle.includes("6 tháng") ||
+                                    deadline.includes("hàng tháng") || 
+                                    deadline.includes("thứ");
+                                  
+                                  if (isPeriodic) {
+                                    return (
+                                      <option key={r.id} value={r.id} className="text-gray-600">
+                                        ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""}
+                                      </option>
+                                    );
+                                  }
+                                  
                                   return (
-                                    <option key={r.id} value={r.id} className="text-gray-400">
-                                      ⚪ {r.content}
+                                    <option key={r.id} value={r.id} className="text-gray-600">
+                                      ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""} (chưa báo cáo)
                                     </option>
                                   );
-                                }
-                                
-                                return (
-                                  <option key={r.id} value={r.id} className="text-gray-600">
-                                    ⚪ {r.content} (chưa báo cáo)
-                                  </option>
-                                );
-                              })}
+                                })
+                            ) : (
+                              <option disabled>Không có yêu cầu báo cáo nào cho đơn vị này</option>
+                            )}
                           </select>
                           <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
                             <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
@@ -733,6 +793,12 @@ export default function App() {
                               <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Thời hạn</p>
                               <p className="text-sm font-medium">{selectedReport.deadline || "N/A"}</p>
                             </div>
+                            {selectedReport.directingDocument && (
+                              <div className="col-span-1 sm:col-span-2">
+                                <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Văn bản chỉ đạo</p>
+                                <p className="text-sm font-medium text-blue-700">{selectedReport.directingDocument}</p>
+                              </div>
+                            )}
                             <div className="col-span-1 sm:col-span-2 mt-2 pt-2 border-t border-emerald-100/50">
                               <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                                 getReportStatus(selectedReport).bg || 'bg-gray-100'
@@ -863,84 +929,96 @@ export default function App() {
                         ))}
                       </div>
                     </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="bg-gray-50 border-b border-gray-200">
-                            <th className="px-3 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Thời gian cập nhật</th>
-                            <th className="px-3 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Nội dung báo cáo</th>
-                            <th className="px-3 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Kỳ báo cáo</th>
-                            <th className="px-3 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Thời hạn</th>
-                            <th className="px-3 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider text-center">Ngày gửi</th>
-                            <th className="px-3 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider text-center">Trạng thái</th>
-                            <th className="px-3 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider text-center">Tài liệu</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                          {history
-                            .filter(item => {
-                              const period = String(item.period || "");
-                              if (historyFilter === "Tất cả") return true;
-                              if (historyFilter === "Tuần") return period.startsWith("Tuần");
-                              if (historyFilter === "Tháng") return period.startsWith("Tháng");
-                              if (historyFilter === "Khác") return !period.startsWith("Tuần") && !period.startsWith("Tháng");
-                              return true;
-                            })
-                            .slice().reverse().map((item, idx) => {
-                              const isLate = checkIsLate(item.dateSent, item.deadline, item.period, item.year);
-                              return (
-                                <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
-                                  <td className="px-3 py-4 text-[10px] text-gray-500 leading-tight">
-                                    {item.timestamp?.split(' ').map((part: string, i: number) => (
-                                      <div key={i}>{part}</div>
-                                    ))}
-                                  </td>
-                                  <td className="px-3 py-4">
-                                    <p className="text-xs font-medium text-gray-900 break-words whitespace-pre-wrap line-clamp-2" title={item.content}>{item.content}</p>
-                                    <p className="text-[9px] text-gray-400 mt-1 line-clamp-1">{item.classification}</p>
-                                  </td>
-                                  <td className="px-3 py-4">
-                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-600 uppercase tracking-wider whitespace-nowrap">
-                                      {item.period}
-                                    </span>
-                                  </td>
-                                  <td className="px-3 py-4 text-[10px] text-gray-500 whitespace-nowrap">{formatDate(item.deadline)}</td>
-                                  <td className="px-3 py-4 text-[10px] text-gray-500 whitespace-nowrap text-center">{formatDate(item.dateSent)}</td>
-                                  <td className="px-3 py-4 text-center">
-                                    {isLate ? (
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-red-50 text-red-600 uppercase tracking-wider whitespace-nowrap">
-                                        <AlertCircle className="w-2.5 h-2.5" />
-                                        Trễ hạn
+                    <div className="p-6 space-y-4">
+                      {history
+                        .filter(item => {
+                          const period = String(item.period || "");
+                          if (historyFilter === "Tất cả") return true;
+                          if (historyFilter === "Tuần") return period.startsWith("Tuần");
+                          if (historyFilter === "Tháng") return period.startsWith("Tháng");
+                          if (historyFilter === "Khác") return !period.startsWith("Tuần") && !period.startsWith("Tháng");
+                          return true;
+                        })
+                        .slice().reverse().map((item, idx) => {
+                          const isLate = checkIsLate(item.dateSent, item.deadline, item.period, item.year);
+                          return (
+                            <motion.div 
+                              key={idx}
+                              initial={{ opacity: 0, y: 5 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="bg-gray-50/50 rounded-2xl border border-gray-100 p-4 hover:bg-white hover:shadow-md transition-all group"
+                            >
+                              <div className="flex flex-col sm:flex-row justify-between gap-4">
+                                <div className="flex-1 space-y-3">
+                                  <div className="flex items-start justify-between">
+                                    <div className="space-y-1">
+                                      <h4 className="text-sm font-bold text-gray-900 group-hover:text-emerald-700 transition-colors">
+                                        {item.content}
+                                      </h4>
+                                      <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">
+                                        {item.classification}
+                                      </p>
+                                    </div>
+                                    <div className="text-right">
+                                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Cập nhật lúc</p>
+                                      <p className="text-[10px] font-medium text-gray-600">{item.timestamp}</p>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 border-t border-gray-100">
+                                    <div>
+                                      <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Kỳ báo cáo</p>
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-bold bg-emerald-50 text-emerald-600 uppercase tracking-wider">
+                                        {item.period}
                                       </span>
-                                    ) : (
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-600 uppercase tracking-wider whitespace-nowrap">
-                                        <CheckCircle2 className="w-2.5 h-2.5" />
-                                        Đúng hạn
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td className="px-3 py-4 text-center">
-                                    <a 
-                                      href={item.attachment} 
-                                      target="_blank" 
-                                      rel="noopener noreferrer"
-                                      className="text-emerald-600 hover:text-emerald-700 transition-colors inline-block"
-                                    >
-                                      <ExternalLink className="w-3.5 h-3.5" />
-                                    </a>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          {history.length === 0 && (
-                            <tr>
-                              <td colSpan={7} className="px-6 py-12 text-center text-gray-400 text-sm">
-                                Chưa có dữ liệu cập nhật nào được ghi nhận trên Google Sheet.
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
+                                    </div>
+                                    <div>
+                                      <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Thời hạn</p>
+                                      <p className="text-[10px] font-medium text-gray-600">{formatDate(item.deadline)}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Ngày gửi</p>
+                                      <p className="text-[10px] font-medium text-gray-600">{formatDate(item.dateSent)}</p>
+                                    </div>
+                                    <div className="flex flex-col items-end sm:items-start">
+                                      <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Trạng thái</p>
+                                      {isLate ? (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-bold bg-red-50 text-red-600 uppercase tracking-wider">
+                                          <AlertCircle className="w-3 h-3" />
+                                          Trễ hạn
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-bold bg-emerald-50 text-emerald-600 uppercase tracking-wider">
+                                          <CheckCircle2 className="w-3 h-3" />
+                                          Đúng hạn
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="flex sm:flex-col items-center justify-center sm:pl-4 sm:border-l border-gray-100 gap-3">
+                                  <a 
+                                    href={item.attachment} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-600 rounded-xl hover:bg-emerald-100 transition-all group/link"
+                                    title="Xem tài liệu"
+                                  >
+                                    <ExternalLink className="w-4 h-4 group-hover/link:scale-110 transition-transform" />
+                                    <span className="text-[10px] font-bold uppercase tracking-wider sm:hidden">Tài liệu</span>
+                                  </a>
+                                </div>
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      {history.length === 0 && (
+                        <div className="py-20 text-center bg-gray-50 rounded-3xl border border-dashed border-gray-200">
+                          <Clock className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                          <p className="text-gray-500 font-medium">Chưa có dữ liệu cập nhật nào được ghi nhận.</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -962,6 +1040,7 @@ export default function App() {
                 allReports={allReports}
                 units={units}
                 loading={summaryLoading} 
+                currentUserUnit={selectedUnit}
                 checkIsLate={checkIsLate}
                 formatDate={formatDate}
               />
@@ -978,7 +1057,12 @@ export default function App() {
                 <h2 className="text-2xl font-bold text-gray-900">Quản lý yêu cầu báo cáo</h2>
                 <p className="text-gray-500">Thêm mới hoặc cập nhật các yêu cầu báo cáo định kỳ cho toàn đơn vị.</p>
               </div>
-              <ManageReports units={units} onRefresh={refreshDefinitions} />
+              <ManageReports 
+                units={units} 
+                reports={allReports} 
+                allHistory={allHistory}
+                onRefresh={refreshDefinitions} 
+              />
             </motion.div>
           )}
         </AnimatePresence>

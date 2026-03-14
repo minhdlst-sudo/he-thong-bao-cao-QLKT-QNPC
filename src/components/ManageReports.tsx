@@ -9,24 +9,31 @@ import {
   FilePlus,
   ChevronDown,
   Check,
-  Calendar
+  Calendar,
+  Search,
+  FileText,
+  ChevronRight
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import DatePicker, { registerLocale } from "react-datepicker";
 import { vi } from "date-fns/locale/vi";
 import "react-datepicker/dist/react-datepicker.css";
+import { ReportDefinition } from "../types";
 
 registerLocale("vi", vi);
 
 interface ManageReportsProps {
   units: string[];
+  reports: ReportDefinition[];
+  allHistory: any[];
   onRefresh: () => Promise<void>;
 }
 
-export default function ManageReports({ units: initialUnits, onRefresh }: ManageReportsProps) {
+export default function ManageReports({ units: initialUnits, reports, allHistory, onRefresh }: ManageReportsProps) {
   const [loading, setLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(true);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
   
   const [classifications, setClassifications] = useState<string[]>([]);
   const [specialists, setSpecialists] = useState<string[]>([]);
@@ -35,6 +42,71 @@ export default function ManageReports({ units: initialUnits, onRefresh }: Manage
   const [availableUnits, setAvailableUnits] = useState<string[]>([]);
   const [showUnitDropdown, setShowUnitDropdown] = useState(false);
   const [specificDate, setSpecificDate] = useState<Date | null>(null);
+
+  const getReportStats = (report: ReportDefinition) => {
+    const normalizeUnit = (u: string) => (u || "").toLowerCase().trim().replace(/\s+/g, ' ');
+    const normalizePeriod = (s: string) => (s || "").toLowerCase().trim().replace(/\s+/g, ' ').replace(/\b0+(\d+)/g, '$1');
+
+    const assignedUnits = report.unit.split(",").map(u => u.trim());
+    let targetUnits: string[] = [];
+
+    const normalizedAvailableUnits = availableUnits.map(normalizeUnit);
+
+    if (assignedUnits.some(u => normalizeUnit(u) === "tất cả")) {
+      targetUnits = availableUnits.filter(u => {
+        const nu = normalizeUnit(u);
+        return nu !== "phòng kỹ thuật" && nu !== "văn thư pkt";
+      });
+    } else if (assignedUnits.some(u => normalizeUnit(u) === "điện lực")) {
+      targetUnits = availableUnits.filter(u => normalizeUnit(u).startsWith("đl"));
+    } else {
+      targetUnits = assignedUnits;
+    }
+
+    // Determine current period for this report type
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+    let periodStr = "";
+
+    const cycle = report.cycle?.toLowerCase() || "";
+    const isPeriodic = cycle.includes("tuần") || cycle.includes("tháng") || cycle.includes("quý") || cycle.includes("năm");
+
+    if (cycle.includes("tuần")) {
+      const startOfYear = new Date(currentYear, 0, 1);
+      const days = Math.floor((now.getTime() - startOfYear.getTime()) / (24 * 60 * 60 * 1000));
+      const currentWeek = Math.ceil((days + startOfYear.getDay() + 1) / 7);
+      const targetWeek = currentWeek - 1 || 52;
+      const targetYear = targetWeek === 52 && now.getMonth() === 0 ? currentYear - 1 : currentYear;
+      periodStr = `Tuần ${targetWeek.toString().padStart(2, '0')}/${targetYear}`;
+    } else if (cycle.includes("tháng")) {
+      const targetMonth = currentMonth - 1 || 12;
+      const targetYear = currentMonth === 1 ? currentYear - 1 : currentYear;
+      periodStr = `Tháng ${targetMonth.toString().padStart(2, '0')}/${targetYear}`;
+    } else if (cycle.includes("quý")) {
+      const quarter = Math.floor((currentMonth - 1) / 3) + 1;
+      periodStr = `Quý ${quarter}/${currentYear}`;
+    } else if (cycle.includes("năm")) {
+      periodStr = `Năm ${currentYear}`;
+    } else {
+      periodStr = report.deadline;
+    }
+
+    const normalizedPeriod = normalizePeriod(periodStr);
+    const normalizedReportContent = (report.content || "").trim().toLowerCase();
+
+    const reportedUnits = new Set(
+      allHistory
+        .filter(h => 
+          (h.content || "").trim().toLowerCase() === normalizedReportContent && 
+          normalizePeriod(h.period || "") === normalizedPeriod
+        )
+        .map(h => normalizeUnit(h.unit))
+    );
+
+    const reportedCount = targetUnits.filter(u => reportedUnits.has(normalizeUnit(u))).length;
+    return { reported: reportedCount, total: targetUnits.length, currentPeriod: periodStr, isPeriodic };
+  };
 
   const [formData, setFormData] = useState({
     content: "",
@@ -239,7 +311,7 @@ export default function ManageReports({ units: initialUnits, onRefresh }: Manage
                     onChange={(e) => setFormData({...formData, deadline: e.target.value})}
                   >
                     <option value="">-- Chọn thời hạn --</option>
-                    {deadlines.map(d => (
+                    {deadlines.filter(d => d !== "Ngày cụ thể").map(d => (
                       <option key={d} value={d}>{d}</option>
                     ))}
                     <option value="Ngày cụ thể">Ngày cụ thể</option>
@@ -369,6 +441,149 @@ export default function ManageReports({ units: initialUnits, onRefresh }: Manage
             </button>
           </div>
         </form>
+      </div>
+
+      {/* List of Existing Reports */}
+      <div className="mt-12 bg-white rounded-3xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-6 border-b border-gray-100 bg-gray-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+              <Calendar className="text-emerald-600 w-6 h-6" />
+              Danh sách yêu cầu báo cáo
+            </h3>
+            <p className="text-sm text-gray-500 mt-1">Các yêu cầu báo cáo hiện có trong hệ thống (đồng bộ từ Google Sheets).</p>
+          </div>
+          
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input 
+              type="text"
+              placeholder="Tìm kiếm báo cáo..."
+              className="pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all w-full sm:w-64"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="p-6">
+          <div className="grid grid-cols-1 gap-6">
+            {reports
+              .filter(r => 
+                r.content.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                r.classification.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                r.specialist.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                r.unit.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (r.directingDocument || "").toLowerCase().includes(searchTerm.toLowerCase())
+              )
+              .map((report, index) => {
+                const stats = getReportStats(report);
+                const progress = stats.total > 0 ? (stats.reported / stats.total) * 100 : 0;
+                
+                return (
+                  <motion.div 
+                    key={report.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                    className="group bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all overflow-hidden"
+                  >
+                    <div className="flex flex-col md:flex-row">
+                      {/* Index & Content Section */}
+                      <div className="p-5 md:w-2/5 border-b md:border-b-0 md:border-r border-gray-50">
+                        <div className="flex items-start gap-4">
+                          <span className="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-50 text-gray-400 text-xs font-bold flex items-center justify-center border border-gray-100">
+                            {index + 1}
+                          </span>
+                          <div className="space-y-2">
+                            <h4 className="text-base font-bold text-gray-900 leading-snug group-hover:text-emerald-700 transition-colors">
+                              {report.content}
+                            </h4>
+                            <div className="flex flex-wrap gap-2">
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100 uppercase tracking-wider">
+                                {report.classification}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Metadata Grid */}
+                      <div className="p-5 md:w-2/5 grid grid-cols-2 sm:grid-cols-3 gap-4 border-b md:border-b-0 md:border-r border-gray-50 bg-gray-50/30">
+                        <div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Phụ trách</p>
+                          <p className="text-sm font-medium text-gray-700">{report.specialist}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Thời hạn</p>
+                          <p className="text-sm font-medium text-gray-700">{report.deadline}</p>
+                        </div>
+                        <div>
+                          {stats.isPeriodic ? (
+                            <div className="mt-1">
+                              <p className="text-sm font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg inline-block border border-emerald-100">
+                                {stats.currentPeriod}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="bg-blue-50/50 p-2 rounded-xl border border-blue-100">
+                              <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1 flex items-center gap-1">
+                                <FileText className="w-3 h-3" />
+                                Văn bản chỉ đạo
+                              </p>
+                              <p className="text-xs font-bold text-blue-800 leading-tight">
+                                {report.directingDocument || "Chưa cập nhật"}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                        <div className="col-span-full">
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Đơn vị thực hiện</p>
+                          <p className="text-xs text-gray-500 leading-relaxed">{report.unit}</p>
+                        </div>
+                      </div>
+
+                      {/* Stats Section */}
+                      <div className="p-5 md:w-1/5 flex flex-col items-center justify-center bg-white">
+                        <div className="text-center space-y-3 w-full max-w-[120px]">
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Tiến độ nộp</p>
+                          <div className="relative pt-1">
+                            <div className="flex items-center justify-between mb-2">
+                              <div>
+                                <span className={`text-xs font-bold inline-block py-1 px-2 uppercase rounded-full ${progress === 100 ? 'text-emerald-600 bg-emerald-50' : 'text-blue-600 bg-blue-50'}`}>
+                                  {stats.reported}/{stats.total}
+                                </span>
+                              </div>
+                              <div className="text-right">
+                                <span className={`text-xs font-bold inline-block ${progress === 100 ? 'text-emerald-600' : 'text-blue-600'}`}>
+                                  {Math.round(progress)}%
+                                </span>
+                              </div>
+                            </div>
+                            <div className="overflow-hidden h-2 mb-4 text-xs flex rounded bg-gray-100">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${progress}%` }}
+                                transition={{ duration: 1, ease: "easeOut" }}
+                                className={`shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center ${progress === 100 ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                              ></motion.div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+
+            {reports.length === 0 && (
+              <div className="py-20 text-center bg-gray-50 rounded-3xl border border-dashed border-gray-200">
+                <FileText className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500 font-medium">Chưa có yêu cầu báo cáo nào được tạo.</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

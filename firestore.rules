@@ -1,0 +1,61 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: report_definitions
+// Fields:
+//   - content: string (required)
+//   - classification: string (required)
+//   - specialist: string (required)
+//   - cycle: string (required)
+//   - deadline: string (required)
+//   - unit: string (required)
+//   - directingDocument: string (optional)
+//
+// Collection: report_submissions
+// Fields:
+//   - reportDefinitionId: string (required)
+//   - unitName: string (required)
+//   - dateSent: string (required)
+//   - attachmentLink: string (required)
+//   - period: string (required)
+//   - year: number (required)
+//   - timestamp: string (optional)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "minhdlst@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // Report Definitions: Everyone can read, only admins can write
+    match /report_definitions/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Report Submissions: Everyone can read, anyone can write (for now, based on current app logic)
+    // In a real app, we'd restrict write to the unit's own data, but the current app uses a shared unit selection.
+    match /report_submissions/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+    
+    // Users collection for RBAC
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+  }
+}
