@@ -19,13 +19,18 @@ import { motion, AnimatePresence } from "motion/react";
 import DatePicker, { registerLocale } from "react-datepicker";
 import { vi } from "date-fns/locale/vi";
 import "react-datepicker/dist/react-datepicker.css";
-import { UNITS, ReportDefinition, ReportSubmission } from "./types";
+import { ReportDefinition, ReportSubmission } from "./types";
 import SummaryReport from "./components/SummaryReport";
+import ManageReports from "./components/ManageReports";
 
 registerLocale("vi", vi);
 
 export default function App() {
   const [selectedUnit, setSelectedUnit] = useState<string | null>(() => localStorage.getItem("selectedUnit"));
+  const [loginUnit, setLoginUnit] = useState<string>("");
+  const [password, setPassword] = useState<string>("");
+  const [loginError, setLoginError] = useState<string>("");
+  const [units, setUnits] = useState<string[]>([]);
   const [reports, setReports] = useState<ReportDefinition[]>([]);
   const [submissions, setSubmissions] = useState<ReportSubmission[]>([]);
   const [history, setHistory] = useState<any[]>([]);
@@ -34,8 +39,9 @@ export default function App() {
   const [selectedReportId, setSelectedReportId] = useState<number | "">("");
   const selectedReport = reports.find(r => r.id === selectedReportId);
   
-  const [currentView, setCurrentView] = useState<"dashboard" | "summary">("dashboard");
+  const [currentView, setCurrentView] = useState<"dashboard" | "summary" | "manage-reports">("dashboard");
   const [allHistory, setAllHistory] = useState<any[]>([]);
+  const [allReports, setAllReports] = useState<ReportDefinition[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
   
   // Period Selection
@@ -51,7 +57,15 @@ export default function App() {
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const startOfYear = new Date(currentYear, 0, 1);
+  const days = Math.floor((now.getTime() - startOfYear.getTime()) / (24 * 60 * 60 * 1000));
+  const currentWeek = Math.ceil((days + startOfYear.getDay() + 1) / 7);
+
   const getReportStatus = (report: ReportDefinition) => {
+    if (!report) return { type: 'normal', color: 'text-gray-400', label: '', icon: '', bg: '', border: '' };
+    
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth() + 1;
@@ -116,45 +130,59 @@ export default function App() {
       return { type: 'normal', color: 'text-gray-400', label: '', icon: '' };
     }
 
-    if (!deadlineDate) return { type: 'normal', color: 'text-gray-400', label: '', icon: '' };
-
     // Check if submitted for this period
-    const submission = submissions.find(s => 
-      s.reportDefinitionId === report.id && 
-      (s.period.includes(periodStr) || s.period === periodStr)
-    );
-
-    if (submission) {
-      const isLate = checkIsLate(submission.dateSent, report.deadline, submission.period, submission.year);
-      if (isLate) {
-        return { 
-          type: 'submitted-late', 
-          color: 'text-red-600', 
-          label: `Đã báo cáo - Trễ hạn`, 
-          icon: '🔴',
-          bg: 'bg-red-50',
-          border: 'border-red-200'
-        };
+    const normalizePeriod = (p: string) => {
+      if (!p) return "";
+      let normalized = p.toLowerCase().trim();
+      // Normalize DD/MM/YYYY by removing leading zeros
+      const dmyMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (dmyMatch) {
+        return `${parseInt(dmyMatch[1])}/${parseInt(dmyMatch[2])}/${dmyMatch[3]}`;
       }
+      return normalized;
+    };
+
+    const pStrNormalized = normalizePeriod(periodStr);
+
+    const submission = submissions.find(s => {
+      if (s.reportDefinitionId !== report.id) return false;
+      if (!pStrNormalized) return true; // For non-periodic, any submission counts
+      const sPeriodNormalized = normalizePeriod(s.period);
+      return sPeriodNormalized.includes(pStrNormalized) || pStrNormalized.includes(sPeriodNormalized);
+    });
+
+    // Fallback: Check history (Google Sheets data) by content and period
+    const historySubmission = !submission && history.find(h => {
+      if (h.content !== report.content) return false;
+      if (!pStrNormalized) return true;
+      const hPeriodNormalized = normalizePeriod(h.period);
+      return hPeriodNormalized.includes(pStrNormalized) || pStrNormalized.includes(hPeriodNormalized);
+    });
+
+    if (submission || historySubmission) {
       return { 
         type: 'submitted', 
-        color: 'text-purple-600', 
-        label: `Đã báo cáo kỳ ${periodStr}`, 
+        color: 'text-emerald-600', 
+        label: `Đã báo cáo`, 
         icon: '✅',
-        bg: 'bg-purple-50',
-        border: 'border-purple-200'
+        bg: 'bg-emerald-50',
+        border: 'border-emerald-200'
       };
     }
+
+    if (!deadlineDate) return { type: 'normal', color: 'text-gray-400', label: '', icon: '' };
 
     const diffTime = deadlineDate.getTime() - now.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
     if (diffDays < 0) return { type: 'late', color: 'text-red-600', label: 'Trễ hạn', icon: '🔴', bg: 'bg-red-50', border: 'border-red-200' };
-    if (diffDays <= 2) return { type: 'urgent', color: 'text-amber-600', label: 'Cận hạn (2 ngày)', icon: '🟠', bg: 'bg-amber-50', border: 'border-amber-200' };
-    if (diffDays <= 3) return { type: 'warning', color: 'text-emerald-600', label: 'Sắp hạn (3 ngày)', icon: '🟢', bg: 'bg-emerald-50', border: 'border-emerald-200' };
 
     return { type: 'normal', color: 'text-gray-500', label: 'Chưa nộp', icon: '⚪' };
   };
+
+  useEffect(() => {
+    fetchUnits();
+  }, []);
 
   useEffect(() => {
     if (selectedUnit) {
@@ -192,8 +220,21 @@ export default function App() {
   useEffect(() => {
     if (currentView === "summary") {
       fetchAllHistory();
+      fetchAllReports();
     }
   }, [currentView]);
+
+  const fetchUnits = async () => {
+    try {
+      const res = await fetch("/api/units");
+      if (res.ok) {
+        const data = await res.json();
+        setUnits(data);
+      }
+    } catch (error) {
+      console.error("Error fetching units:", error);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -238,10 +279,25 @@ export default function App() {
     }
   };
 
+  const fetchAllReports = async () => {
+    try {
+      const res = await fetch("/api/all-reports");
+      if (res.ok) {
+        const data = await res.json();
+        setAllReports(data);
+      }
+    } catch (error) {
+      console.error("Error fetching all reports:", error);
+    }
+  };
+
   const refreshDefinitions = async () => {
     setLoading(true);
     await fetch("/api/refresh-definitions", { method: "POST" });
     await fetchData();
+    if (currentView === "summary") {
+      fetchAllReports();
+    }
   };
 
   const handleLogout = () => {
@@ -250,19 +306,36 @@ export default function App() {
 
   const confirmLogout = () => {
     setSelectedUnit(null);
+    setLoginUnit("");
+    setPassword("");
+    setLoginError("");
     localStorage.removeItem("selectedUnit");
     setShowLogoutConfirm(false);
   };
 
+  const handleLogin = () => {
+    if (!loginUnit) return;
+
+    if (loginUnit === "Văn thư PKT") {
+      if (password === "pkt@2026") {
+        setSelectedUnit(loginUnit);
+        setLoginError("");
+      } else {
+        setLoginError("Mật khẩu không chính xác");
+      }
+    } else {
+      setSelectedUnit(loginUnit);
+      setLoginError("");
+    }
+  };
+
   const reportStats = reports.reduce((acc, r) => {
     const status = getReportStatus(r);
-    if (status.type === 'late' || status.type === 'submitted-late') acc.late++;
-    else if (status.type === 'urgent') acc.urgent++;
-    else if (status.type === 'warning') acc.warning++;
+    if (status.type === 'late') acc.late++;
     else if (status.type === 'submitted') acc.submitted++;
     else acc.pending++;
     return acc;
-  }, { late: 0, urgent: 0, warning: 0, submitted: 0, pending: 0 });
+  }, { late: 0, submitted: 0, pending: 0 });
 
   const handleUpdateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -302,6 +375,7 @@ export default function App() {
       if (res.ok) {
         setMessage({ type: 'success', text: "Cập nhật thành công và đã đồng bộ lên Google Sheet!" });
         setUpdateForm({ ...updateForm, attachmentLink: "" });
+        setSelectedReportId("");
         fetchData();
       } else {
         setMessage({ type: 'error', text: "Có lỗi xảy ra khi gửi dữ liệu" });
@@ -339,6 +413,11 @@ export default function App() {
         if (dmyMatch) {
           return new Date(parseInt(dmyMatch[3]), parseInt(dmyMatch[2]) - 1, parseInt(dmyMatch[1]));
         }
+        // Handle YYYY-MM-DD
+        const ymdMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        if (ymdMatch) {
+          return new Date(parseInt(ymdMatch[1]), parseInt(ymdMatch[2]) - 1, parseInt(ymdMatch[3]));
+        }
         const d = new Date(str);
         return isNaN(d.getTime()) ? null : d;
       };
@@ -346,13 +425,41 @@ export default function App() {
       const sentDate = parseDateStr(dateSentStr);
       if (!sentDate) return false;
 
+      // Handle "Thứ X" for Weekly reports
+      const weekMatch = periodStr.match(/Tuần (\d+)/i);
+      const dayOfWeekMatch = deadlineStr.match(/Thứ (\d+)/i);
+
+      if (weekMatch && dayOfWeekMatch) {
+        const weekNum = parseInt(weekMatch[1]);
+        const dayOfWeek = parseInt(dayOfWeekMatch[1]); // 2, 3, 4, 5, 6, 7, 8 (CN)
+        const year = reportYear ? parseInt(String(reportYear)) : sentDate.getFullYear();
+        
+        const startOfYear = new Date(year, 0, 1);
+        const startDay = startOfYear.getDay();
+        
+        // Find the date for this week and day
+        for (let d = 0; d < 366; d++) {
+          const testDate = new Date(year, 0, 1 + d);
+          if (testDate.getFullYear() !== year) break;
+          
+          const week = Math.ceil((d + startDay + 1) / 7);
+          const targetDay = dayOfWeek === 8 ? 0 : dayOfWeek - 1;
+          
+          if (week === weekNum && testDate.getDay() === targetDay) {
+            const deadlineDate = new Date(testDate);
+            deadlineDate.setHours(23, 59, 59, 999);
+            return sentDate > deadlineDate;
+          }
+        }
+      }
+
       // Handle "Ngày XX hàng tháng"
       const dayMatch = deadlineStr.match(/Ngày (\d+)/i);
       const monthMatch = periodStr.match(/Tháng (\d+)/i);
       
       if (dayMatch && monthMatch) {
         const day = parseInt(dayMatch[1]);
-        const reportMonth = parseInt(monthMatch[1]); // Month N (1-12)
+        const reportMonth = parseInt(monthMatch[1]);
         const year = reportYear ? parseInt(String(reportYear)) : sentDate.getFullYear();
         
         // Deadline is Day XX of Month N+1
@@ -361,10 +468,9 @@ export default function App() {
         return sentDate > deadlineDate;
       }
 
-      // Handle direct date comparison (like 24/01/2026)
+      // Handle direct date comparison
       const deadlineDate = parseDateStr(deadlineStr);
       if (deadlineDate) {
-        // Set time to end of day for deadline
         deadlineDate.setHours(23, 59, 59, 999);
         return sentDate > deadlineDate;
       }
@@ -403,11 +509,15 @@ export default function App() {
             <div className="relative">
               <select 
                 className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all cursor-pointer"
-                onChange={(e) => setSelectedUnit(e.target.value)}
-                defaultValue=""
+                onChange={(e) => {
+                  setLoginUnit(e.target.value);
+                  setLoginError("");
+                  setPassword("");
+                }}
+                value={loginUnit}
               >
                 <option value="" disabled>Chọn đơn vị của bạn...</option>
-                {UNITS.map(unit => (
+                {units.map(unit => (
                   <option key={unit} value={unit}>{unit}</option>
                 ))}
               </select>
@@ -415,9 +525,32 @@ export default function App() {
                 <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
               </div>
             </div>
+
+            {loginUnit === "Văn thư PKT" && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                className="space-y-2"
+              >
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">Mật khẩu</label>
+                <input 
+                  type="password"
+                  placeholder="Nhập mật khẩu..."
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+                />
+              </motion.div>
+            )}
+
+            {loginError && (
+              <p className="text-red-500 text-xs font-medium">{loginError}</p>
+            )}
             
             <button 
-              disabled={!selectedUnit}
+              onClick={handleLogin}
+              disabled={!loginUnit || (loginUnit === "Văn thư PKT" && !password)}
               className="w-full bg-emerald-600 text-white font-semibold py-3 rounded-xl hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-600/20"
             >
               Đăng nhập
@@ -446,7 +579,7 @@ export default function App() {
                 onClick={() => setCurrentView("dashboard")}
                 className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'dashboard' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
               >
-                Điện lực
+                {selectedUnit}
               </button>
               <button 
                 onClick={() => setCurrentView("summary")}
@@ -454,6 +587,14 @@ export default function App() {
               >
                 Tất cả đơn vị
               </button>
+              {selectedUnit === "Văn thư PKT" && (
+                <button 
+                  onClick={() => setCurrentView("manage-reports")}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'manage-reports' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Quản lý báo cáo
+                </button>
+              )}
             </div>
 
             <button 
@@ -463,6 +604,13 @@ export default function App() {
             >
               <RefreshCw className="w-5 h-5" />
             </button>
+            <div className="text-right hidden md:block">
+              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-0.5">Thời gian hiện tại</p>
+              <div className="flex items-center gap-2 text-blue-700 bg-blue-50 px-3 py-1 rounded-lg border border-blue-100 shadow-sm">
+                <Calendar className="w-3.5 h-3.5" />
+                <span className="text-sm font-bold">Tuần {currentWeek}, {currentYear}</span>
+              </div>
+            </div>
             <div className="text-right hidden sm:block">
               <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-0.5">Đơn vị</p>
               <p className="text-sm font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-100 shadow-sm">{selectedUnit}</p>
@@ -495,25 +643,6 @@ export default function App() {
                 </div>
                 
                 <div className="flex flex-wrap gap-3">
-                  <div className="bg-white border border-amber-100 rounded-2xl px-4 py-2 shadow-sm flex items-center gap-3">
-                    <div className="w-8 h-8 bg-amber-50 rounded-lg flex items-center justify-center text-amber-600 font-bold text-sm">
-                      {reportStats.urgent}
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Cận hạn</p>
-                      <p className="text-xs font-bold text-amber-600">Trong 2 ngày</p>
-                    </div>
-                  </div>
-
-                  <div className="bg-white border border-emerald-100 rounded-2xl px-4 py-2 shadow-sm flex items-center gap-3">
-                    <div className="w-8 h-8 bg-emerald-50 rounded-lg flex items-center justify-center text-emerald-600 font-bold text-sm">
-                      {reportStats.warning}
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Sắp hạn</p>
-                      <p className="text-xs font-bold text-emerald-600">Trong 3 ngày</p>
-                    </div>
-                  </div>
                 </div>
               </div>
 
@@ -528,8 +657,6 @@ export default function App() {
                           <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">Nội dung báo cáo</label>
                           <div className="flex gap-1.5">
                             <span className="w-2 h-2 rounded-full bg-purple-500" title="Đã báo cáo"></span>
-                            <span className="w-2 h-2 rounded-full bg-emerald-500" title="Sắp hạn (3 ngày)"></span>
-                            <span className="w-2 h-2 rounded-full bg-amber-500" title="Cận hạn (2 ngày)"></span>
                             <span className="w-2 h-2 rounded-full bg-red-500" title="Trễ hạn"></span>
                           </div>
                         </div>
@@ -539,18 +666,41 @@ export default function App() {
                             value={selectedReportId}
                             onChange={(e) => setSelectedReportId(e.target.value ? Number(e.target.value) : "")}
                             className={`w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
-                              selectedReportId ? getReportStatus(reports.find(r => r.id === selectedReportId)!).color : ''
+                              selectedReportId ? (getReportStatus(reports.find(r => r.id === selectedReportId) as ReportDefinition).color || '') : ''
                             }`}
                           >
                             <option value="">-- Chọn nội dung báo cáo --</option>
-                            {reports.map(r => {
-                              const status = getReportStatus(r);
-                              return (
-                                <option key={r.id} value={r.id} className={status.color}>
-                                  {status.icon} {r.content} {status.label ? `(${status.label})` : ''}
-                                </option>
-                              );
-                            })}
+                            {reports
+                              .filter(r => r && r.content)
+                              .filter(r => {
+                                const cycle = r.cycle?.toLowerCase() || "";
+                                const deadline = r.deadline?.toLowerCase() || "";
+                                const isPeriodic = cycle.includes("tuần") || cycle.includes("tháng") || deadline.includes("hàng tháng") || deadline.includes("thứ");
+                                
+                                if (isPeriodic) return true;
+                                
+                                const status = getReportStatus(r);
+                                return status.type !== 'submitted';
+                              })
+                              .map(r => {
+                                const cycle = r.cycle?.toLowerCase() || "";
+                                const deadline = r.deadline?.toLowerCase() || "";
+                                const isPeriodic = cycle.includes("tuần") || cycle.includes("tháng") || deadline.includes("hàng tháng") || deadline.includes("thứ");
+                                
+                                if (isPeriodic) {
+                                  return (
+                                    <option key={r.id} value={r.id} className="text-gray-400">
+                                      ⚪ {r.content}
+                                    </option>
+                                  );
+                                }
+                                
+                                return (
+                                  <option key={r.id} value={r.id} className="text-gray-600">
+                                    ⚪ {r.content} (chưa báo cáo)
+                                  </option>
+                                );
+                              })}
                           </select>
                           <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
                             <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
@@ -760,7 +910,7 @@ export default function App() {
                                     {isLate ? (
                                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-red-50 text-red-600 uppercase tracking-wider whitespace-nowrap">
                                         <AlertCircle className="w-2.5 h-2.5" />
-                                        Trễ
+                                        Trễ hạn
                                       </span>
                                     ) : (
                                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-600 uppercase tracking-wider whitespace-nowrap">
@@ -796,9 +946,8 @@ export default function App() {
                 </div>
               </div>
             </motion.div>
-          ) : (
+          ) : currentView === "summary" ? (
             <motion.div
-              key="summary"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
@@ -810,10 +959,26 @@ export default function App() {
               </div>
               <SummaryReport 
                 history={allHistory} 
+                allReports={allReports}
+                units={units}
                 loading={summaryLoading} 
                 checkIsLate={checkIsLate}
                 formatDate={formatDate}
               />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="manage-reports"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="mb-8">
+                <h2 className="text-2xl font-bold text-gray-900">Quản lý yêu cầu báo cáo</h2>
+                <p className="text-gray-500">Thêm mới hoặc cập nhật các yêu cầu báo cáo định kỳ cho toàn đơn vị.</p>
+              </div>
+              <ManageReports units={units} onRefresh={refreshDefinitions} />
             </motion.div>
           )}
         </AnimatePresence>

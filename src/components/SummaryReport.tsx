@@ -8,29 +8,118 @@ import {
   TrendingDown
 } from "lucide-react";
 import { motion } from "motion/react";
-import { UNITS } from "../types";
+import { ReportDefinition } from "../types";
 
 interface SummaryReportProps {
   history: any[];
+  allReports: ReportDefinition[];
+  units: string[];
   loading: boolean;
   checkIsLate: (dateSent: string, deadline: string, period: string, year: any) => boolean;
   formatDate: (dateStr: string) => string;
 }
 
-export default function SummaryReport({ history, loading, checkIsLate, formatDate }: SummaryReportProps) {
+export default function SummaryReport({ history, allReports, units, loading, checkIsLate, formatDate }: SummaryReportProps) {
   const [searchTerm, setSearchTerm] = React.useState("");
   const [filter, setFilter] = React.useState<"Tất cả" | "Tuần" | "Tháng" | "Khác">("Tất cả");
+  const [selectedWeek, setSelectedWeek] = React.useState("");
+  const [selectedMonth, setSelectedMonth] = React.useState("");
+  const [selectedOtherReport, setSelectedOtherReport] = React.useState("");
+
+  // Extract unique report names for "Khác" category from both history and definitions
+  const otherReportsList = useMemo(() => {
+    const fromHistory = history
+      .filter(h => {
+        const period = String(h.period || "");
+        return !period.startsWith("Tuần") && !period.startsWith("Tháng");
+      })
+      .map(h => h.content);
+    
+    const fromDefinitions = allReports
+      .filter(r => r && r.content)
+      .filter(r => {
+        const cycle = (r.cycle || "").toLowerCase();
+        const deadline = (r.deadline || "").toLowerCase();
+        return !cycle.includes("tuần") && !cycle.includes("tháng") && 
+               !deadline.includes("hàng tháng") && !deadline.includes("thứ");
+      })
+      .map(r => r.content);
+
+    return Array.from(new Set([...fromHistory, ...fromDefinitions])).sort();
+  }, [history, allReports]);
 
   const summaryData = useMemo(() => {
-    const unitsData = UNITS.map(unitName => {
+    // Filter out specific units as requested by user
+    const filteredUnits = units.filter(u => {
+      const trimmedU = u.trim();
+      return trimmedU !== "Điện lực" && trimmedU !== "Tất cả" && trimmedU !== "Văn thư PKT";
+    });
+
+    // Determine which units are required for the selected report if in "Khác" mode
+    let requiredUnits = filteredUnits;
+    if (filter === "Khác" && selectedOtherReport) {
+      // Find ALL definitions that match the selected report content
+      const reportDefs = allReports.filter(r => 
+        r && (r.content || "").trim() === selectedOtherReport.trim()
+      );
+      
+      const unitsForReport = new Set<string>();
+      
+      reportDefs.forEach(def => {
+        const unitStr = (def.unit || "").trim();
+        if (unitStr === "Tất cả") {
+          filteredUnits.forEach(u => {
+            const trimmedU = u.trim();
+            if (trimmedU !== "Phòng kỹ thuật" && trimmedU !== "Văn thư PKT") {
+              unitsForReport.add(trimmedU);
+            }
+          });
+        } else if (unitStr === "Điện lực") {
+          filteredUnits.forEach(u => {
+            const trimmedU = u.trim();
+            if (trimmedU.startsWith("ĐL")) {
+              unitsForReport.add(trimmedU);
+            }
+          });
+        } else if (unitStr) {
+          // Handle comma separated specific units
+          unitStr.split(",").forEach(u => {
+            const trimmedU = u.trim();
+            if (trimmedU) unitsForReport.add(trimmedU);
+          });
+        }
+      });
+      
+      // If we found specific units in definitions, filter the units list
+      if (unitsForReport.size > 0) {
+        requiredUnits = filteredUnits.filter(u => {
+          const normalizedU = u.trim();
+          return Array.from(unitsForReport).some(ru => ru === normalizedU);
+        });
+      }
+    }
+
+    const unitsData = requiredUnits.map(unitName => {
       const unitHistory = history
         .filter(h => h.unit === unitName)
         .filter(h => {
           const period = String(h.period || "");
           if (filter === "Tất cả") return true;
-          if (filter === "Tuần") return period.startsWith("Tuần");
-          if (filter === "Tháng") return period.startsWith("Tháng");
-          if (filter === "Khác") return !period.startsWith("Tuần") && !period.startsWith("Tháng");
+          if (filter === "Tuần") {
+            if (!period.startsWith("Tuần")) return false;
+            if (selectedWeek) return period.includes(`Tuần ${selectedWeek}`);
+            return true;
+          }
+          if (filter === "Tháng") {
+            if (!period.startsWith("Tháng")) return false;
+            if (selectedMonth) return period.includes(`Tháng ${selectedMonth}`);
+            return true;
+          }
+          if (filter === "Khác") {
+            if (period.startsWith("Tuần") || period.startsWith("Tháng")) return false;
+            if (selectedOtherReport) return h.content === selectedOtherReport;
+            return true;
+          }
           return true;
         })
         .sort((a, b) => {
@@ -70,16 +159,10 @@ export default function SummaryReport({ history, loading, checkIsLate, formatDat
     });
 
     return unitsData;
-  }, [history, checkIsLate, filter]);
+  }, [history, allReports, checkIsLate, filter, selectedWeek, selectedMonth, selectedOtherReport]);
 
   const filteredData = summaryData.filter(d => {
     const matchesSearch = d.unitName.toLowerCase().includes(searchTerm.toLowerCase());
-    if (filter === "Tất cả") return matchesSearch;
-    
-    // If filter is Week/Month, we only care about units that have reports in that category
-    // or we filter the stats? 
-    // The user said: "nắm bắt được trong tuần, tháng, khác thì đơn vị nào báo cáo trễ, đơn vị nào đúng hạn"
-    // This implies we might want to filter the history within the summary.
     return matchesSearch;
   });
 
@@ -111,8 +194,8 @@ export default function SummaryReport({ history, loading, checkIsLate, formatDat
       </div>
 
       {/* Filters & Search */}
-      <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
-        <div className="relative w-full sm:w-96">
+      <div className="flex flex-col lg:flex-row gap-4 items-center justify-between">
+        <div className="relative w-full lg:w-96">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
           <input 
             type="text" 
@@ -123,18 +206,75 @@ export default function SummaryReport({ history, loading, checkIsLate, formatDat
           />
         </div>
 
-        <div className="flex bg-gray-100 p-1 rounded-xl">
-          {(["Tất cả", "Tuần", "Tháng", "Khác"] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                filter === f ? "bg-white text-emerald-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              {f}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          {filter === "Tuần" && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-gray-400 uppercase">Chọn tuần:</span>
+              <select 
+                value={selectedWeek}
+                onChange={(e) => setSelectedWeek(e.target.value)}
+                className="bg-white border border-gray-200 rounded-xl px-3 py-1.5 text-xs font-bold text-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm"
+              >
+                <option value="">Tất cả tuần</option>
+                {Array.from({ length: 52 }, (_, i) => {
+                  const val = (i + 1).toString().padStart(2, '0');
+                  return <option key={val} value={val}>Tuần {val}</option>;
+                })}
+              </select>
+            </div>
+          )}
+
+          {filter === "Tháng" && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-gray-400 uppercase">Chọn tháng:</span>
+              <select 
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="bg-white border border-gray-200 rounded-xl px-3 py-1.5 text-xs font-bold text-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm"
+              >
+                <option value="">Tất cả tháng</option>
+                {Array.from({ length: 12 }, (_, i) => {
+                  const val = (i + 1).toString().padStart(2, '0');
+                  return <option key={val} value={val}>Tháng {val}</option>;
+                })}
+              </select>
+            </div>
+          )}
+
+          {filter === "Khác" && (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-gray-400 uppercase">Chọn báo cáo:</span>
+              <select 
+                value={selectedOtherReport}
+                onChange={(e) => setSelectedOtherReport(e.target.value)}
+                className="bg-white border border-gray-200 rounded-xl px-3 py-1.5 text-xs font-bold text-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm max-w-[200px]"
+              >
+                <option value="">Tất cả báo cáo khác</option>
+                {otherReportsList.map((report, i) => (
+                  <option key={i} value={report}>{report}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className="flex bg-gray-100 p-1 rounded-xl">
+            {(["Tất cả", "Tuần", "Tháng", "Khác"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => {
+                  setFilter(f);
+                  if (f !== "Tuần") setSelectedWeek("");
+                  if (f !== "Tháng") setSelectedMonth("");
+                  if (f !== "Khác") setSelectedOtherReport("");
+                }}
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  filter === f ? "bg-white text-emerald-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -146,8 +286,6 @@ export default function SummaryReport({ history, loading, checkIsLate, formatDat
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Đơn vị</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Báo cáo gần nhất</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider text-center">Đúng hạn</th>
-                <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider text-center">Trễ</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Tình trạng</th>
               </tr>
             </thead>
@@ -173,25 +311,19 @@ export default function SummaryReport({ history, loading, checkIsLate, formatDat
                       <span className="text-xs text-gray-400 italic">Chưa có dữ liệu</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-center">
-                    <span className="text-sm font-bold text-emerald-600">{unit.onTimeReports}</span>
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    <span className="text-sm font-bold text-red-600">{unit.lateReports}</span>
-                  </td>
                   <td className="px-6 py-4">
-                    {unit.isWarning ? (
+                    {unit.totalReports === 0 ? (
+                      <span className="text-[10px] text-gray-400 uppercase font-bold">Chưa báo cáo</span>
+                    ) : unit.lastReport?.isLate ? (
                       <div className="flex items-center gap-2 text-red-600">
                         <AlertCircle className="w-4 h-4" />
-                        <span className="text-[10px] font-bold uppercase tracking-wider">Cảnh báo: Trễ {unit.consecutiveLates} kỳ liên tiếp</span>
-                      </div>
-                    ) : unit.totalReports > 0 ? (
-                      <div className="flex items-center gap-2 text-emerald-600">
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span className="text-[10px] font-bold uppercase tracking-wider">Ổn định</span>
+                        <span className="text-[10px] font-bold uppercase tracking-wider">Trễ hạn</span>
                       </div>
                     ) : (
-                      <span className="text-[10px] text-gray-400 uppercase font-bold">Chưa báo cáo</span>
+                      <div className="flex items-center gap-2 text-emerald-600">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span className="text-[10px] font-bold uppercase tracking-wider">Đúng hạn</span>
+                      </div>
                     )}
                   </td>
                 </tr>
