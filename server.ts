@@ -14,9 +14,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Initialize Firebase Admin
-// We'll use environment variables for Firebase Admin if available, 
-// otherwise we'll try to use the local config for client-side but admin needs service account.
-// For Vercel, we'll need GOOGLE_APPLICATION_CREDENTIALS or similar.
 let db: any;
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -24,10 +21,10 @@ try {
     initializeApp({
       credential: cert(serviceAccount)
     });
-    db = getFirestore();
-    console.log("Firebase Admin initialized with service account.");
+    // CRITICAL: Use the specific database ID from your config
+    db = getFirestore("ai-studio-f099909a-83bc-4220-985c-854c259d85ed");
+    console.log("Firebase Admin initialized with database: ai-studio-f099909a-83bc-4220-985c-854c259d85ed");
   } else {
-    // Fallback for local dev if needed, but usually we want real DB
     console.warn("FIREBASE_SERVICE_ACCOUNT missing. Firestore operations will fail on server.");
   }
 } catch (error) {
@@ -42,15 +39,17 @@ async function getGoogleSheet() {
   let privateKey = process.env.GOOGLE_PRIVATE_KEY;
 
   if (!email || !privateKey) {
-    console.warn("Google Sheets credentials missing. Submission to sheet will fail.");
+    console.warn("Google Sheets credentials missing.");
     return null;
   }
 
-  privateKey = privateKey.replace(/\\n/g, "\n").replace(/^["']|["']$/g, "").trim();
+  // Improved private key handling for Vercel
+  privateKey = privateKey.replace(/\\n/g, "\n")
+                         .replace(/^["']|["']$/g, "")
+                         .trim();
+  
   if (privateKey && !privateKey.startsWith("-----BEGIN PRIVATE KEY-----")) {
-    if (!privateKey.includes("-----")) {
-       privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----`;
-    }
+    privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----`;
   }
 
   try {
@@ -72,43 +71,48 @@ async function getGoogleSheet() {
 async function fetchReportDefinitions() {
   if (!db) return;
   try {
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${LIET_KE_GID}`;
-    const response = await fetch(csvUrl);
-    if (!response.ok) throw new Error(`Failed to fetch CSV: ${response.status}`);
+    // Use Service Account to fetch definitions instead of public CSV for better reliability
+    const doc = await getGoogleSheet();
+    if (!doc) {
+      console.warn("Could not connect to Google Sheets for definitions sync. Check credentials and sharing permissions.");
+      return;
+    }
 
-    const csvText = await response.text();
-    if (csvText.startsWith("<!DOCTYPE html>")) throw new Error("Received HTML instead of CSV");
+    const sheet = doc.sheetsById[LIET_KE_GID] || doc.sheetsByTitle["Liet ke"];
+    if (!sheet) {
+      console.error(`Sheet with GID ${LIET_KE_GID} or title 'Liet ke' not found.`);
+      return;
+    }
 
-    const lines = csvText.split("\n").slice(1);
-    const reports = lines.map(line => {
-      const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-      if (parts.length < 7) return null;
-      return {
-        content: parts[1]?.replace(/^"|"$/g, "").trim(),
-        classification: parts[2]?.replace(/^"|"$/g, "").trim(),
-        specialist: parts[3]?.replace(/^"|"$/g, "").trim(),
-        cycle: parts[4]?.replace(/^"|"$/g, "").trim(),
-        deadline: parts[5]?.replace(/^"|"$/g, "").trim(),
-        unit: parts[6]?.replace(/^"|"$/g, "").trim(),
-        directingDocument: parts[7]?.replace(/^"|"$/g, "").trim() || ""
-      };
-    }).filter(r => r && r.content);
+    const rows = await sheet.getRows();
+    const reports = rows.map(row => ({
+      content: String(row.get("Nội dung báo cáo") || "").trim(),
+      classification: String(row.get("Phân loại") || "").trim(),
+      specialist: String(row.get("Phụ trách") || "").trim(),
+      cycle: String(row.get("Chu kỳ") || "").trim(),
+      deadline: String(row.get("Thời hạn") || "").trim(),
+      unit: String(row.get("Đơn vị") || "").trim(),
+      directingDocument: String(row.get("Văn bản chỉ đạo") || "").trim()
+    })).filter(r => r.content);
+
+    if (reports.length === 0) {
+      console.warn("No reports found in Google Sheet.");
+      return;
+    }
 
     // Sync to Firestore
-    const batch = db.batch();
     const collectionRef = db.collection("report_definitions");
     
-    // Clear existing (Admin SDK doesn't have a simple "delete collection", so we'd need to list and delete)
-    // For simplicity in this sync, we'll just add/update. 
-    // In a real sync, we'd use a unique ID from the sheet.
+    // For simplicity and to avoid quota issues, we'll update based on content
     for (const report of reports) {
-      const docRef = collectionRef.doc(); // Or use a hash of content to prevent duplicates
-      batch.set(docRef, report);
+      const q = await collectionRef.where("content", "==", report.content).limit(1).get();
+      if (q.empty) {
+        await collectionRef.add(report);
+      } else {
+        await q.docs[0].ref.update(report);
+      }
     }
-    // Note: This simple sync adds duplicates every time. 
-    // Better: use content as ID or clear first.
-    // Let's just log for now to avoid blowing up Firestore quota in a loop.
-    console.log(`Prepared ${reports.length} report definitions for Firestore.`);
+    console.log(`Successfully synced ${reports.length} report definitions to Firestore.`);
   } catch (error) {
     console.error("Error fetching report definitions:", error);
   }
