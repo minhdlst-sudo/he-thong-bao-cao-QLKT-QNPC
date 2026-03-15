@@ -66,7 +66,14 @@ export default function App() {
       if (user) {
         setIsAuthReady(true);
       } else {
-        signInAnonymously(auth).catch(console.error);
+        signInAnonymously(auth).catch((error) => {
+          console.error("Firebase Auth Error:", error.code, error.message);
+          if (error.code === 'auth/admin-restricted-operation') {
+            console.warn("Vui lòng bật 'Anonymous Sign-in' trong Firebase Console > Authentication > Sign-in method.");
+          }
+          // Vẫn cho phép ứng dụng chạy, nhưng các thao tác Firestore có thể bị chặn bởi Security Rules
+          setIsAuthReady(true);
+        });
       }
     });
 
