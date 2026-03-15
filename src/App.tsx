@@ -60,18 +60,21 @@ export default function App() {
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setIsAuthReady(true);
+        setAuthError(null);
       } else {
         signInAnonymously(auth).catch((error) => {
           console.error("Firebase Auth Error:", error.code, error.message);
           if (error.code === 'auth/admin-restricted-operation') {
-            console.warn("Vui lòng bật 'Anonymous Sign-in' trong Firebase Console > Authentication > Sign-in method.");
+            setAuthError("Lỗi cấu hình: Vui lòng bật 'Anonymous Sign-in' trong Firebase Console > Authentication > Sign-in method.");
+          } else {
+            setAuthError(`Lỗi xác thực: ${error.message}`);
           }
-          // Vẫn cho phép ứng dụng chạy, nhưng các thao tác Firestore có thể bị chặn bởi Security Rules
           setIsAuthReady(true);
         });
       }
@@ -539,7 +542,13 @@ export default function App() {
 
   if (!selectedUnit) {
     return (
-      <div className="min-h-screen bg-[#F5F5F5] flex items-center justify-center p-4 font-sans">
+      <div className="min-h-screen bg-[#F5F5F5] flex flex-col items-center justify-center p-4 font-sans">
+        {authError && (
+          <div className="max-w-md w-full mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-2xl flex items-start gap-3 shadow-sm">
+            <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+            <p className="text-xs font-bold">{authError}</p>
+          </div>
+        )}
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -625,6 +634,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] font-sans text-gray-900 pb-12">
+      {authError && (
+        <div className="bg-red-600 text-white px-4 py-2 text-center text-sm font-bold flex items-center justify-center gap-2">
+          <AlertCircle className="w-4 h-4" />
+          {authError}
+        </div>
+      )}
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
