@@ -222,13 +222,9 @@ async function fetchReportDefinitions() {
 fetchReportDefinitions().catch(err => console.error("Initial sync failed:", err));
 
 const app = express();
+app.use(express.json());
 
-async function setupApp() {
-  const PORT = 3000;
-
-  app.use(express.json());
-
-  app.post("/api/refresh-definitions", async (req, res) => {
+app.post("/api/refresh-definitions", async (req, res) => {
     try {
       const result = await fetchReportDefinitions();
       res.json(result);
@@ -376,9 +372,13 @@ async function setupApp() {
     const cached = getCachedData(cacheKey);
     if (cached) return res.json(cached);
 
+    console.log("Fetching units from Google Sheets...");
     try {
       const doc = await getGoogleSheet();
-      if (!doc) throw new Error("Could not connect to Google Sheets");
+      if (!doc) {
+        console.error("Failed to connect to Google Sheets in /api/units");
+        throw new Error("Could not connect to Google Sheets");
+      }
       
       const sheet = doc.sheetsByTitle["Thu vien"];
       if (!sheet) {
@@ -617,13 +617,13 @@ async function setupApp() {
     }
   });
 
-  // 404 for API routes - prevent falling through to Vite/SPA
-  app.all("/api/*", (req, res) => {
-    console.warn(`404 API Not Found: ${req.method} ${req.url}`);
-    res.status(404).json({ error: "API route not found" });
-  });
+// 404 for API routes - prevent falling through to Vite/SPA
+app.all("/api/*", (req, res) => {
+  console.warn(`404 API Not Found: ${req.method} ${req.url}`);
+  res.status(404).json({ error: "API route not found" });
+});
 
-  // Vite middleware for development
+async function setupVite() {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -638,15 +638,15 @@ async function setupApp() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
-
-  if (process.env.NODE_ENV !== "production") {
-    const PORT = 3000;
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
 }
 
-setupApp();
+setupVite().catch(err => console.error("Vite setup failed:", err));
+
+if (process.env.NODE_ENV !== "production") {
+  const PORT = 3000;
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
 
 export default app;
