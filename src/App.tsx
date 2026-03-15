@@ -39,7 +39,7 @@ export default function App() {
   const [history, setHistory] = useState<any[]>([]);
   const [historyFilter, setHistoryFilter] = useState<"Tất cả" | "Tuần" | "Tháng" | "Khác">("Tất cả");
   const [loading, setLoading] = useState(false);
-  const [selectedReportId, setSelectedReportId] = useState<number | "">("");
+  const [selectedReportId, setSelectedReportId] = useState<string>("");
   const selectedReport = reports.find(r => r.id === selectedReportId);
   
   const [currentView, setCurrentView] = useState<"dashboard" | "summary" | "manage-reports">("dashboard");
@@ -96,6 +96,13 @@ export default function App() {
   }, []);
 
   const isAdmin = selectedUnit?.toLowerCase().trim() === "phòng kỹ thuật" || selectedUnit?.toLowerCase().trim() === "văn thư pkt";
+  const isVanThu = selectedUnit?.toLowerCase().trim() === "văn thư pkt";
+
+  useEffect(() => {
+    if (isVanThu && currentView === "dashboard") {
+      setCurrentView("summary");
+    }
+  }, [selectedUnit, currentView, isVanThu]);
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -300,7 +307,21 @@ export default function App() {
       ]);
       
       if (!reportsRes.ok || !submissionsRes.ok || !historyRes.ok || !allReportsRes.ok || !allHistoryRes.ok) {
-        throw new Error("Lỗi khi tải dữ liệu từ máy chủ.");
+        const details = {
+          reports: reportsRes.status,
+          submissions: submissionsRes.status,
+          history: historyRes.status,
+          allReports: allReportsRes.status,
+          allHistory: allHistoryRes.status
+        };
+        console.error("Fetch error details:", details);
+        
+        const failedEndpoints = Object.entries(details)
+          .filter(([_, status]) => status !== 200)
+          .map(([name, status]) => `${name} (${status})`)
+          .join(", ");
+          
+        throw new Error(`Lỗi khi tải dữ liệu từ máy chủ: ${failedEndpoints}`);
       }
 
       const reportsData = await reportsRes.json();
@@ -652,12 +673,14 @@ export default function App() {
           
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl mr-2">
-              <button 
-                onClick={() => setCurrentView("dashboard")}
-                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'dashboard' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-              >
-                {selectedUnit}
-              </button>
+              {!isVanThu && (
+                <button 
+                  onClick={() => setCurrentView("dashboard")}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'dashboard' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  {selectedUnit}
+                </button>
+              )}
               <button 
                 onClick={() => setCurrentView("summary")}
                 className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'summary' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
@@ -741,45 +764,50 @@ export default function App() {
                           <select 
                             required
                             value={selectedReportId}
-                            onChange={(e) => setSelectedReportId(e.target.value ? Number(e.target.value) : "")}
+                            onChange={(e) => setSelectedReportId(e.target.value)}
                             className={`w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
                               selectedReportId ? (getReportStatus(reports.find(r => r.id === selectedReportId) as ReportDefinition).color || '') : ''
                             }`}
                           >
                             <option value="">-- Chọn nội dung báo cáo --</option>
                             {reports.length > 0 ? (
-                              reports
-                                .filter(r => r && r.content)
-                                .filter(r => {
-                                  const status = getReportStatus(r);
-                                  return status.type !== 'submitted';
-                                })
-                                .map(r => {
-                                  const cycle = r.cycle?.toLowerCase() || "";
-                                  const deadline = r.deadline?.toLowerCase() || "";
-                                  const isPeriodic = 
-                                    cycle.includes("tuần") || 
-                                    cycle.includes("tháng") || 
-                                    cycle.includes("quý") || 
-                                    cycle.includes("năm") || 
-                                    cycle.includes("6 tháng") ||
-                                    deadline.includes("hàng tháng") || 
-                                    deadline.includes("thứ");
-                                  
-                                  if (isPeriodic) {
+                              (() => {
+                                const seen = new Set();
+                                return reports
+                                  .filter(r => r && r.content)
+                                  .filter(r => {
+                                    if (seen.has(r.content)) return false;
+                                    seen.add(r.content);
+                                    const status = getReportStatus(r);
+                                    return status.type !== 'submitted';
+                                  })
+                                  .map(r => {
+                                    const cycle = r.cycle?.toLowerCase() || "";
+                                    const deadline = r.deadline?.toLowerCase() || "";
+                                    const isPeriodic = 
+                                      cycle.includes("tuần") || 
+                                      cycle.includes("tháng") || 
+                                      cycle.includes("quý") || 
+                                      cycle.includes("năm") || 
+                                      cycle.includes("6 tháng") ||
+                                      deadline.includes("hàng tháng") || 
+                                      deadline.includes("thứ");
+                                    
+                                    if (isPeriodic) {
+                                      return (
+                                        <option key={r.id} value={r.id} className="text-gray-600">
+                                          ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""}
+                                        </option>
+                                      );
+                                    }
+                                    
                                     return (
                                       <option key={r.id} value={r.id} className="text-gray-600">
-                                        ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""}
+                                        ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""} (chưa báo cáo)
                                       </option>
                                     );
-                                  }
-                                  
-                                  return (
-                                    <option key={r.id} value={r.id} className="text-gray-600">
-                                      ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""} (chưa báo cáo)
-                                    </option>
-                                  );
-                                })
+                                  });
+                              })()
                             ) : (
                               <option disabled>Không có yêu cầu báo cáo nào cho đơn vị này</option>
                             )}

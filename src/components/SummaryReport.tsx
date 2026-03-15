@@ -119,10 +119,14 @@ export default function SummaryReport({ history, allReports, units, loading, cur
     const filteredUnits = units.filter(u => {
       const trimmedU = u.trim();
       const lowerU = trimmedU.toLowerCase();
+      const lowerCurrentUserUnit = (currentUserUnit || "").toLowerCase().trim();
       
       // Always filter out labels
       if (lowerU === "điện lực" || lowerU === "tất cả") return false;
       
+      // "Văn thư PKT" does not perform reports, so hide its card when logged in as "Văn thư PKT"
+      if (lowerCurrentUserUnit === "văn thư pkt" && lowerU === "văn thư pkt") return false;
+
       // If not admin, cannot see admin units
       if (!isAdmin && adminUnits.some(au => au.toLowerCase() === lowerU)) return false;
       
@@ -294,49 +298,6 @@ export default function SummaryReport({ history, allReports, units, loading, cur
 
   return (
     <div className="space-y-8">
-      {/* Stats Overview */}
-      <div className="grid grid-cols-1 gap-6">
-        <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm">
-          <div className="flex items-center gap-4 mb-6">
-            <div className="bg-orange-100 p-3 rounded-2xl">
-              <TrendingDown className="text-orange-600 w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Cảnh báo trễ hạn</p>
-              <h4 className="text-2xl font-bold">
-                {summaryData.filter(d => d.missingLateCount > 0).length} đơn vị
-              </h4>
-            </div>
-          </div>
-          
-          <div className="space-y-3">
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">
-              Danh sách đơn vị chưa nộp báo cáo trễ hạn
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {summaryData
-                .filter(d => d.missingLateCount > 0)
-                .sort((a, b) => b.missingLateCount - a.missingLateCount)
-                .map((unit, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 bg-red-50/50 rounded-xl border border-red-100 group hover:bg-red-50 transition-colors">
-                    <span className="text-sm font-bold text-gray-700 truncate mr-2" title={unit.unitName}>
-                      {unit.unitName}
-                    </span>
-                    <span className="flex-shrink-0 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded-lg shadow-sm shadow-red-600/20">
-                      {unit.missingLateCount} báo cáo
-                    </span>
-                  </div>
-                ))}
-              {summaryData.filter(d => d.missingLateCount > 0).length === 0 && (
-                <div className="col-span-full py-4 text-center">
-                  <p className="text-sm text-gray-400 italic">Hiện tại không có đơn vị nào trễ hạn chưa báo cáo.</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
       {/* Filters & Search */}
       <div className="flex flex-col lg:flex-row gap-4 items-center justify-between">
         <div className="relative w-full lg:w-96">
@@ -460,15 +421,7 @@ export default function SummaryReport({ history, allReports, units, loading, cur
                 )}
               </div>
 
-              <div className="flex items-center justify-between sm:justify-end gap-6 sm:min-w-[150px]">
-                <div className="text-center">
-                  <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Thống kê</p>
-                  <p className="text-xs font-bold text-gray-700">
-                    <span className="text-emerald-600">{unit.onTimeReports}</span>
-                    <span className="text-gray-300 mx-1">/</span>
-                    <span className="text-gray-900">{unit.totalReports}</span>
-                  </p>
-                </div>
+              <div className="flex items-center justify-between sm:justify-end gap-6 sm:min-w-[120px]">
                 <div className="text-right">
                   <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Tình trạng</p>
                   {unit.totalReports === 0 ? (

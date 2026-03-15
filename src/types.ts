@@ -4,7 +4,7 @@ export interface Unit {
 }
 
 export interface ReportDefinition {
-  id: number;
+  id: string;
   content: string;
   classification: string;
   specialist: string;
@@ -15,8 +15,8 @@ export interface ReportDefinition {
 }
 
 export interface ReportSubmission {
-  id?: number;
-  reportDefinitionId: number;
+  id?: string;
+  reportDefinitionId: string;
   unitName: string;
   dateSent: string;
   attachmentLink: string;

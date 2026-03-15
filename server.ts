@@ -6,6 +6,7 @@ import { JWT } from "google-auth-library";
 import dotenv from "dotenv";
 import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
+import firebaseConfig from "./firebase-applet-config.json" assert { type: "json" };
 
 dotenv.config();
 
@@ -22,9 +23,16 @@ try {
         credential: cert(serviceAccount)
       });
     }
-    // CRITICAL: Use the specific database ID from your config
-    db = getFirestore("ai-studio-f099909a-83bc-4220-985c-854c259d85ed");
-    console.log("Firebase Admin initialized with database: ai-studio-f099909a-83bc-4220-985c-854c259d85ed");
+    
+    // Use the database ID from the config file
+    const dbId = firebaseConfig.firestoreDatabaseId || process.env.FIREBASE_DATABASE_ID;
+    if (dbId) {
+      db = getFirestore(dbId);
+      console.log(`Firebase Admin initialized with database ID: ${dbId}`);
+    } else {
+      db = getFirestore();
+      console.log("Firebase Admin initialized with default database");
+    }
   } else {
     console.warn("FIREBASE_SERVICE_ACCOUNT missing. Firestore operations will fail on server.");
   }
@@ -35,6 +43,11 @@ try {
 const SHEET_ID = process.env.GOOGLE_SHEET_ID || "17VVgZJrpEByKRqMOAEZU0cDD8XwJSf7xsPVvbBHPU4o";
 const LIET_KE_GID = "528046969";
 
+// Cache for Google Sheets document
+let cachedDoc: GoogleSpreadsheet | null = null;
+let lastLoadTime = 0;
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
 async function getGoogleSheet() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let privateKey = process.env.GOOGLE_PRIVATE_KEY;
@@ -42,6 +55,12 @@ async function getGoogleSheet() {
   if (!email || !privateKey) {
     console.warn("Google Sheets credentials missing.");
     return null;
+  }
+
+  // Return cached doc if it's still fresh
+  const now = Date.now();
+  if (cachedDoc && (now - lastLoadTime < CACHE_DURATION)) {
+    return cachedDoc;
   }
 
   // Improved private key handling for Vercel
@@ -62,11 +81,36 @@ async function getGoogleSheet() {
 
     const doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
     await doc.loadInfo();
+    console.log(`Successfully connected to Google Sheet: ${doc.title}`);
+    
+    cachedDoc = doc;
+    lastLoadTime = Date.now();
+    
     return doc;
   } catch (error: any) {
-    console.error("Google Sheets Auth Error:", error.message);
+    console.error("Google Sheets Connection Error:", {
+      message: error.message,
+      sheetId: SHEET_ID,
+      email: email
+    });
     return null;
   }
+}
+
+// Simple memory cache for API responses
+const apiCache = new Map<string, { data: any, timestamp: number }>();
+const API_CACHE_DURATION = 60 * 1000; // 1 minute
+
+function getCachedData(key: string) {
+  const cached = apiCache.get(key);
+  if (cached && (Date.now() - cached.timestamp < API_CACHE_DURATION)) {
+    return cached.data;
+  }
+  return null;
+}
+
+function setCachedData(key: string, data: any) {
+  apiCache.set(key, { data, timestamp: Date.now() });
 }
 
 async function fetchReportDefinitions() {
@@ -86,23 +130,22 @@ async function fetchReportDefinitions() {
     }
 
     const rows = await sheet.getRows();
-    console.log(`Found ${rows.length} rows in sheet.`);
+    const headers = sheet.headerValues;
+    console.log("Detected headers:", headers);
 
-    const reports = rows.map((row, index) => {
-      // Try to get by name (case-insensitive and trimmed), fallback to index if needed
+    const reports = rows.map((row) => {
       const getVal = (possibleNames: string[]) => {
-        // Get all keys from the row to find a match
-        const keys = row.getRawData() ? Object.keys(row.getRawData()) : [];
         for (const name of possibleNames) {
-          const target = name.toLowerCase().trim();
-          // Try exact match first
+          // Try exact match
           let val = row.get(name);
           if (val !== undefined && val !== null) return String(val).trim();
           
-          // Try case-insensitive match
-          const matchingKey = keys.find(k => k.toLowerCase().trim() === target);
-          if (matchingKey) {
-            val = row.get(matchingKey);
+          // Try case-insensitive match by looking through headers
+          const actualHeader = headers.find(h => 
+            possibleNames.some(p => h.toLowerCase().trim() === p.toLowerCase().trim())
+          );
+          if (actualHeader) {
+            val = row.get(actualHeader);
             if (val !== undefined && val !== null) return String(val).trim();
           }
         }
@@ -110,13 +153,13 @@ async function fetchReportDefinitions() {
       };
 
       return {
-        content: getVal(["Nội dung báo cáo", "Noi dung bao cao", "Content"]),
-        classification: getVal(["Phân loại", "Phan loai", "Classification"]),
-        specialist: getVal(["Phụ trách", "Phu trach", "Specialist"]),
-        cycle: getVal(["Chu kỳ", "Chu ky", "Cycle"]),
-        deadline: getVal(["Thời hạn", "Thoi han", "Deadline"]),
-        unit: getVal(["Đơn vị", "Don vi", "Unit"]),
-        directingDocument: getVal(["Văn bản chỉ đạo", "Van ban chi dao", "Document"])
+        content: getVal(["Nội dung báo cáo", "Noi dung bao cao", "Nội dung"]),
+        classification: getVal(["Phân loại", "Phan loai"]),
+        specialist: getVal(["Phụ trách", "Phu trach"]),
+        cycle: getVal(["Chu kỳ", "Chu ky"]),
+        deadline: getVal(["Thời hạn", "Thoi han"]),
+        unit: getVal(["Đơn vị", "Don vi"]),
+        directingDocument: getVal(["Văn bản chỉ đạo", "Van ban chi dao", "Văn bản"])
       };
     }).filter(r => r.content && r.content.toLowerCase() !== "nội dung báo cáo");
 
@@ -127,10 +170,36 @@ async function fetchReportDefinitions() {
 
     // Sync to Firestore
     const collectionRef = db.collection("report_definitions");
+    const snapshot = await collectionRef.get();
+    const existingDocs = snapshot.docs;
+    
     let added = 0;
     let updated = 0;
+    let deleted = 0;
     
-    for (const report of reports) {
+    // Deduplicate reports from sheet by content
+    const uniqueSheetReports = [];
+    const seenInSheet = new Set();
+    for (const r of reports) {
+      if (!seenInSheet.has(r.content)) {
+        uniqueSheetReports.push(r);
+        seenInSheet.add(r.content);
+      }
+    }
+
+    // Delete reports that are no longer in the sheet OR are duplicates in Firestore
+    const seenInFirestore = new Set();
+    for (const doc of existingDocs) {
+      const data = doc.data();
+      if (!seenInSheet.has(data.content) || seenInFirestore.has(data.content)) {
+        await doc.ref.delete();
+        deleted++;
+      } else {
+        seenInFirestore.add(data.content);
+      }
+    }
+    
+    for (const report of uniqueSheetReports) {
       const q = await collectionRef.where("content", "==", report.content).limit(1).get();
       if (q.empty) {
         await collectionRef.add(report);
@@ -140,7 +209,7 @@ async function fetchReportDefinitions() {
         updated++;
       }
     }
-    const msg = `Successfully synced ${reports.length} reports (Added: ${added}, Updated: ${updated})`;
+    const msg = `Successfully synced ${uniqueSheetReports.length} reports (Added: ${added}, Updated: ${updated}, Deleted: ${deleted})`;
     console.log(msg);
     return { success: true, message: msg };
   } catch (error: any) {
@@ -150,9 +219,7 @@ async function fetchReportDefinitions() {
 }
 
 // Initial sync - don't block startup
-if (process.env.NODE_ENV === "production") {
-  fetchReportDefinitions().catch(err => console.error("Initial sync failed:", err));
-}
+fetchReportDefinitions().catch(err => console.error("Initial sync failed:", err));
 
 const app = express();
 
@@ -161,53 +228,99 @@ async function setupApp() {
 
   app.use(express.json());
 
-  // Manual Sync Endpoint
   app.post("/api/refresh-definitions", async (req, res) => {
-    const result = await fetchReportDefinitions();
-    res.json(result);
+    try {
+      const result = await fetchReportDefinitions();
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
   });
 
   app.get("/api/sync", async (req, res) => {
+    // Clear caches on manual sync
+    cachedDoc = null;
+    lastLoadTime = 0;
+    apiCache.clear();
+    
     const result = await fetchReportDefinitions();
     res.json(result);
   });
 
   // API Routes
   app.get("/api/all-reports", async (req, res) => {
+    const cacheKey = "all-reports";
+    const cached = getCachedData(cacheKey);
+    if (cached) return res.json(cached);
+
     if (!db) return res.status(500).json({ error: "DB not initialized" });
-    const snapshot = await db.collection("report_definitions").get();
-    const reports = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
-    res.json(reports);
+    try {
+      const snapshot = await db.collection("report_definitions").get();
+      const reports = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+      
+      setCachedData(cacheKey, reports);
+      res.json(reports);
+    } catch (error: any) {
+      console.error("Error fetching all-reports:", error);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.get("/api/reports", async (req, res) => {
     if (!db) return res.status(500).json({ error: "DB not initialized" });
     const unitName = (req.query.unitName as string || "").trim().toLowerCase();
-    const snapshot = await db.collection("report_definitions").get();
-    const allReports = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
-    
-    const isDLUnit = unitName.startsWith("đl") || unitName.startsWith("điện lực");
-    const filteredReports = allReports.filter((r: any) => {
-      const reportUnit = (r.unit || "").toLowerCase();
-      if (reportUnit.includes("tất cả")) return true;
-      if (isDLUnit && reportUnit.includes("điện lực")) return true;
-      if (reportUnit.includes(unitName)) return true;
-      return false;
-    });
-    res.json(filteredReports);
+    try {
+      const snapshot = await db.collection("report_definitions").get();
+      const allReports = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+      
+      const isDLUnit = unitName.startsWith("đl") || unitName.startsWith("điện lực");
+      const filteredReports = allReports.filter((r: any) => {
+        const reportUnit = (r.unit || "").toLowerCase();
+        
+        // "Văn thư PKT" does not perform reports, only assigns them
+        if (unitName === "văn thư pkt") {
+          // Only show reports explicitly assigned to "Văn thư PKT" (if any)
+          return reportUnit.includes(unitName);
+        }
+
+        // If unit is empty or "tất cả", show to everyone else
+        if (!reportUnit || reportUnit.includes("tất cả")) return true;
+        
+        // If user is a DL unit and report is for "điện lực"
+        if (isDLUnit && reportUnit.includes("điện lực")) return true;
+        
+        // Check if unit name is mentioned in the report's unit field
+        if (reportUnit.includes(unitName) || unitName.includes(reportUnit)) return true;
+        
+        return false;
+      });
+      res.json(filteredReports);
+    } catch (error: any) {
+      console.error("Error fetching reports:", error);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.get("/api/submissions", async (req, res) => {
     if (!db) return res.status(500).json({ error: "DB not initialized" });
     const { unitName } = req.query;
-    const snapshot = await db.collection("report_submissions")
-      .where("unitName", "==", unitName)
-      .get();
-    const submissions = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
-    res.json(submissions);
+    try {
+      const snapshot = await db.collection("report_submissions")
+        .where("unitName", "==", unitName)
+        .get();
+      const submissions = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+      res.json(submissions);
+    } catch (error: any) {
+      console.error("Error fetching submissions:", error);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.get("/api/form-metadata", async (req, res) => {
+    const cacheKey = "form-metadata";
+    const cached = getCachedData(cacheKey);
+    if (cached) return res.json(cached);
+
     try {
       const doc = await getGoogleSheet();
       if (!doc) throw new Error("Could not connect to Google Sheets");
@@ -242,13 +355,16 @@ async function setupApp() {
         if (unitCell.value) units.push(String(unitCell.value).trim());
       }
 
-      res.json({
+      const result = {
         classifications: Array.from(new Set(classifications)),
         specialists: Array.from(new Set(specialists)),
         cycles: Array.from(new Set(cycles)),
         deadlines: Array.from(new Set(deadlines)),
         units: Array.from(new Set(units))
-      });
+      };
+
+      setCachedData(cacheKey, result);
+      res.json(result);
     } catch (error) {
       console.error("Error fetching form metadata:", error);
       res.status(500).json({ error: "Failed to fetch metadata" });
@@ -256,6 +372,10 @@ async function setupApp() {
   });
 
   app.get("/api/units", async (req, res) => {
+    const cacheKey = "units";
+    const cached = getCachedData(cacheKey);
+    if (cached) return res.json(cached);
+
     try {
       const doc = await getGoogleSheet();
       if (!doc) throw new Error("Could not connect to Google Sheets");
@@ -282,7 +402,9 @@ async function setupApp() {
         }
       }
 
-      res.json(Array.from(new Set(units))); // Return unique units
+      const result = Array.from(new Set(units));
+      setCachedData(cacheKey, result);
+      res.json(result); // Return unique units
     } catch (error) {
       console.error("Error fetching units from Google Sheets:", error);
       res.status(500).json({ error: "Failed to fetch units" });
@@ -290,6 +412,10 @@ async function setupApp() {
   });
 
   app.get("/api/all-history", async (req, res) => {
+    const cacheKey = "all-history";
+    const cached = getCachedData(cacheKey);
+    if (cached) return res.json(cached);
+
     try {
       const doc = await getGoogleSheet();
       if (!doc) throw new Error("Could not connect to Google Sheets");
@@ -312,6 +438,7 @@ async function setupApp() {
         attachment: row.get("Link đính kèm")
       }));
 
+      setCachedData(cacheKey, history);
       res.json(history);
     } catch (error) {
       console.error("Error fetching all history:", error);
@@ -488,11 +615,6 @@ async function setupApp() {
       console.error("Error adding report definition:", error);
       res.status(500).json({ error: error.message || "Failed to add report definition" });
     }
-  });
-
-  app.post("/api/refresh-definitions", async (req, res) => {
-    await fetchReportDefinitions();
-    res.json({ message: "Definitions refreshed" });
   });
 
   // 404 for API routes - prevent falling through to Vite/SPA
