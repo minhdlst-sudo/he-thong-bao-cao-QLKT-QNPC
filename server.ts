@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import dotenv from "dotenv";
-import { initializeApp, cert } from "firebase-admin/app";
+import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
 dotenv.config();
@@ -17,9 +17,11 @@ let db: any;
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    initializeApp({
-      credential: cert(serviceAccount)
-    });
+    if (getApps().length === 0) {
+      initializeApp({
+        credential: cert(serviceAccount)
+      });
+    }
     // CRITICAL: Use the specific database ID from your config
     db = getFirestore("ai-studio-f099909a-83bc-4220-985c-854c259d85ed");
     console.log("Firebase Admin initialized with database: ai-studio-f099909a-83bc-4220-985c-854c259d85ed");
@@ -84,46 +86,91 @@ async function fetchReportDefinitions() {
     }
 
     const rows = await sheet.getRows();
-    const reports = rows.map(row => ({
-      content: String(row.get("Nội dung báo cáo") || "").trim(),
-      classification: String(row.get("Phân loại") || "").trim(),
-      specialist: String(row.get("Phụ trách") || "").trim(),
-      cycle: String(row.get("Chu kỳ") || "").trim(),
-      deadline: String(row.get("Thời hạn") || "").trim(),
-      unit: String(row.get("Đơn vị") || "").trim(),
-      directingDocument: String(row.get("Văn bản chỉ đạo") || "").trim()
-    })).filter(r => r.content);
+    console.log(`Found ${rows.length} rows in sheet.`);
+
+    const reports = rows.map((row, index) => {
+      // Try to get by name (case-insensitive and trimmed), fallback to index if needed
+      const getVal = (possibleNames: string[]) => {
+        // Get all keys from the row to find a match
+        const keys = row.getRawData() ? Object.keys(row.getRawData()) : [];
+        for (const name of possibleNames) {
+          const target = name.toLowerCase().trim();
+          // Try exact match first
+          let val = row.get(name);
+          if (val !== undefined && val !== null) return String(val).trim();
+          
+          // Try case-insensitive match
+          const matchingKey = keys.find(k => k.toLowerCase().trim() === target);
+          if (matchingKey) {
+            val = row.get(matchingKey);
+            if (val !== undefined && val !== null) return String(val).trim();
+          }
+        }
+        return "";
+      };
+
+      return {
+        content: getVal(["Nội dung báo cáo", "Noi dung bao cao", "Content"]),
+        classification: getVal(["Phân loại", "Phan loai", "Classification"]),
+        specialist: getVal(["Phụ trách", "Phu trach", "Specialist"]),
+        cycle: getVal(["Chu kỳ", "Chu ky", "Cycle"]),
+        deadline: getVal(["Thời hạn", "Thoi han", "Deadline"]),
+        unit: getVal(["Đơn vị", "Don vi", "Unit"]),
+        directingDocument: getVal(["Văn bản chỉ đạo", "Van ban chi dao", "Document"])
+      };
+    }).filter(r => r.content && r.content.toLowerCase() !== "nội dung báo cáo");
 
     if (reports.length === 0) {
-      console.warn("No reports found in Google Sheet.");
-      return;
+      console.warn("No reports found in Google Sheet. Check column headers: 'Nội dung báo cáo', 'Phân loại', etc.");
+      return { success: false, message: "No reports found in sheet" };
     }
 
     // Sync to Firestore
     const collectionRef = db.collection("report_definitions");
+    let added = 0;
+    let updated = 0;
     
-    // For simplicity and to avoid quota issues, we'll update based on content
     for (const report of reports) {
       const q = await collectionRef.where("content", "==", report.content).limit(1).get();
       if (q.empty) {
         await collectionRef.add(report);
+        added++;
       } else {
         await q.docs[0].ref.update(report);
+        updated++;
       }
     }
-    console.log(`Successfully synced ${reports.length} report definitions to Firestore.`);
-  } catch (error) {
+    const msg = `Successfully synced ${reports.length} reports (Added: ${added}, Updated: ${updated})`;
+    console.log(msg);
+    return { success: true, message: msg };
+  } catch (error: any) {
     console.error("Error fetching report definitions:", error);
+    return { success: false, error: error.message };
   }
 }
 
-fetchReportDefinitions();
+// Initial sync - don't block startup
+if (process.env.NODE_ENV === "production") {
+  fetchReportDefinitions().catch(err => console.error("Initial sync failed:", err));
+}
 
-async function startServer() {
-  const app = express();
+const app = express();
+
+async function setupApp() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Manual Sync Endpoint
+  app.post("/api/refresh-definitions", async (req, res) => {
+    const result = await fetchReportDefinitions();
+    res.json(result);
+  });
+
+  app.get("/api/sync", async (req, res) => {
+    const result = await fetchReportDefinitions();
+    res.json(result);
+  });
 
   // API Routes
   app.get("/api/all-reports", async (req, res) => {
@@ -470,9 +517,14 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (process.env.NODE_ENV !== "production") {
+    const PORT = 3000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-startServer();
+setupApp();
+
+export default app;
