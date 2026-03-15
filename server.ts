@@ -31,7 +31,7 @@ try {
   console.error("Error initializing Firebase Admin:", error);
 }
 
-const SHEET_ID = "17VVgZJrpEByKRqMOAEZU0cDD8XwJSf7xsPVvbBHPU4o";
+const SHEET_ID = process.env.GOOGLE_SHEET_ID || "17VVgZJrpEByKRqMOAEZU0cDD8XwJSf7xsPVvbBHPU4o";
 const LIET_KE_GID = "528046969";
 
 async function getGoogleSheet() {
