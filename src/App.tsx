@@ -34,6 +34,8 @@ export default function App() {
   const [password, setPassword] = useState<string>("");
   const [loginError, setLoginError] = useState<string>("");
   const [units, setUnits] = useState<string[]>([]);
+  const [isLoadingUnits, setIsLoadingUnits] = useState(true);
+  const [unitsError, setUnitsError] = useState<string | null>(null);
   const [reports, setReports] = useState<ReportDefinition[]>([]);
   const [submissions, setSubmissions] = useState<ReportSubmission[]>([]);
   const [history, setHistory] = useState<any[]>([]);
@@ -284,14 +286,38 @@ export default function App() {
   }, [currentView]);
 
   const fetchUnits = async () => {
+    setIsLoadingUnits(true);
+    setUnitsError(null);
+    console.log("Fetching units from /api/units...");
     try {
-      const res = await fetch("/api/units");
-      if (res.ok) {
-        const data = await res.json();
+      const response = await fetch('/api/units');
+      console.log("Units response status:", response.status);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Failed to fetch units:", errorText);
+        setUnitsError(`Lỗi server: ${response.status}`);
+        return;
+      }
+      
+      const data = await response.json();
+      console.log("Units data received:", data);
+      
+      if (Array.isArray(data)) {
+        if (data.length === 0) {
+          console.warn("Units list is empty from server");
+          setUnitsError("Danh sách đơn vị trống. Vui lòng kiểm tra Google Sheet.");
+        }
         setUnits(data);
+      } else {
+        console.error("Invalid units data format:", data);
+        setUnitsError("Dữ liệu đơn vị không hợp lệ");
       }
     } catch (error) {
-      console.error("Error fetching units:", error);
+      console.error('Error fetching units:', error);
+      setUnitsError("Không thể kết nối tới máy chủ");
+    } finally {
+      setIsLoadingUnits(false);
     }
   };
 
@@ -595,28 +621,56 @@ export default function App() {
           <div className="space-y-4">
             <div className="relative">
               <select 
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all cursor-pointer"
+                className={`w-full bg-gray-50 border ${unitsError ? 'border-red-300' : 'border-gray-200'} rounded-xl px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all cursor-pointer disabled:opacity-50`}
                 onChange={(e) => {
                   setLoginUnit(e.target.value);
                   setLoginError("");
                   setPassword("");
                 }}
                 value={loginUnit}
+                disabled={isLoadingUnits || units.length === 0}
               >
-                <option value="" disabled>Chọn đơn vị của bạn...</option>
-                {units
-                  .filter(unit => {
-                    const lowerUnit = unit.toLowerCase().trim();
-                    return lowerUnit !== "điện lực" && lowerUnit !== "tất cả";
-                  })
-                  .map(unit => (
-                    <option key={unit} value={unit}>{unit}</option>
-                  ))}
+                {isLoadingUnits ? (
+                  <option value="">Đang tải danh sách đơn vị...</option>
+                ) : unitsError ? (
+                  <option value="">Lỗi: {unitsError}</option>
+                ) : units.length === 0 ? (
+                  <option value="">Không có đơn vị nào</option>
+                ) : (
+                  <>
+                    <option value="" disabled>Chọn đơn vị của bạn...</option>
+                    {units
+                      .filter(unit => {
+                        const lowerUnit = unit.toLowerCase().trim();
+                        return lowerUnit !== "điện lực" && lowerUnit !== "tất cả";
+                      })
+                      .map(unit => (
+                        <option key={unit} value={unit}>{unit}</option>
+                      ))}
+                  </>
+                )}
               </select>
               <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
-                <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
+                {isLoadingUnits ? (
+                  <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
+                )}
               </div>
             </div>
+
+            {unitsError && (
+              <div className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                {unitsError}
+                <button 
+                  onClick={fetchUnits}
+                  className="ml-2 text-emerald-600 hover:underline font-bold"
+                >
+                  Thử lại
+                </button>
+              </div>
+            )}
 
             {(loginUnit?.toLowerCase().trim() === "văn thư pkt" || loginUnit?.toLowerCase().trim() === "phòng kỹ thuật") && (
               <motion.div

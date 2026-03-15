@@ -1,17 +1,28 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 import dotenv from "dotenv";
 import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import firebaseConfig from "./firebase-applet-config.json" assert { type: "json" };
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Read Firebase Config safely
+let firebaseConfig: any = {};
+try {
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(configPath)) {
+    firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  }
+} catch (err) {
+  console.warn("Could not read firebase-applet-config.json:", err);
+}
 
 // Initialize Firebase Admin
 let db: any;
@@ -380,29 +391,51 @@ app.post("/api/refresh-definitions", async (req, res) => {
         throw new Error("Could not connect to Google Sheets");
       }
       
-      const sheet = doc.sheetsByTitle["Thu vien"];
+      const sheet = doc.sheetsByTitle["Thu vien"] || doc.sheetsByTitle["Thư viện"];
       if (!sheet) {
-        console.error("Sheet 'Thu vien' not found. Available sheets:", doc.sheetsByIndex.map(s => s.title));
+        console.error("Sheet 'Thu vien' or 'Thư viện' not found. Available sheets:", doc.sheetsByIndex.map(s => s.title));
         throw new Error("Sheet 'Thu vien' not found");
       }
 
-      // Load cells for column E (index 4)
+      console.log(`Found sheet: ${sheet.title}. Column count: ${sheet.columnCount}`);
+
+      // Load header row to find the correct column
+      await sheet.loadCells('1:1');
+      let unitColIndex = 4; // Default to column E
+      const headers = [];
+      for (let col = 0; col < sheet.columnCount; col++) {
+        const headerValue = sheet.getCell(0, col).value;
+        const header = String(headerValue || "").toLowerCase().trim();
+        headers.push(header);
+        if (header.includes("đơn vị") || header.includes("don vi")) {
+          unitColIndex = col;
+          console.log(`Found 'Đơn vị' column at index ${col} (Header: "${headerValue}")`);
+          break;
+        }
+      }
+
+      if (unitColIndex === 4 && !headers[4]?.includes("đơn vị")) {
+        console.warn("Could not find 'Đơn vị' column by name. Using default index 4. Headers found:", headers);
+      }
+
+      // Load cells for the identified column
       await sheet.loadCells({
         startRowIndex: 0,
-        endRowIndex: 200, // Load up to 200 rows
-        startColumnIndex: 4,
-        endColumnIndex: 5
+        endRowIndex: 200,
+        startColumnIndex: unitColIndex,
+        endColumnIndex: unitColIndex + 1
       });
 
       const units: string[] = [];
-      for (let i = 1; i < 200; i++) { // Start from row 1 to skip header
-        const cell = sheet.getCell(i, 4);
+      for (let i = 1; i < 200; i++) {
+        const cell = sheet.getCell(i, unitColIndex);
         if (cell.value) {
           units.push(String(cell.value).trim());
         }
       }
 
       const result = Array.from(new Set(units));
+      console.log(`Found ${result.length} unique units.`);
       setCachedData(cacheKey, result);
       res.json(result); // Return unique units
     } catch (error) {
