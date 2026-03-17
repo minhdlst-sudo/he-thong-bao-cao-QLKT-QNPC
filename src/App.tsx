@@ -13,7 +13,8 @@ import {
   Filter,
   AlertCircle,
   RefreshCw,
-  Send
+  Send,
+  X
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import DatePicker, { registerLocale } from "react-datepicker";
@@ -63,6 +64,28 @@ export default function App() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isReportDropdownOpen, setIsReportDropdownOpen] = useState(false);
+  const [reportSearchQuery, setReportSearchQuery] = useState("");
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.report-dropdown-container')) {
+        setIsReportDropdownOpen(false);
+      }
+    };
+
+    if (isReportDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    } else {
+      document.removeEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isReportDropdownOpen]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -814,61 +837,123 @@ export default function App() {
                             <span className="w-2 h-2 rounded-full bg-red-500" title="Trễ hạn"></span>
                           </div>
                         </div>
-                        <div className="relative">
-                          <select 
-                            required
-                            value={selectedReportId}
-                            onChange={(e) => setSelectedReportId(e.target.value)}
-                            className={`w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 appearance-none focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
-                              selectedReportId ? (getReportStatus(reports.find(r => r.id === selectedReportId) as ReportDefinition).color || '') : ''
+                        <div className="relative report-dropdown-container">
+                          <button
+                            type="button"
+                            onClick={() => setIsReportDropdownOpen(!isReportDropdownOpen)}
+                            className={`w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all ${
+                              selectedReportId ? (getReportStatus(reports.find(r => r.id === selectedReportId) as ReportDefinition).color || '') : 'text-gray-400'
                             }`}
                           >
-                            <option value="">-- Chọn nội dung báo cáo --</option>
-                            {reports.length > 0 ? (
-                              (() => {
-                                const seen = new Set();
-                                return reports
-                                  .filter(r => r && r.content)
-                                  .filter(r => {
-                                    if (seen.has(r.content)) return false;
-                                    seen.add(r.content);
-                                    const status = getReportStatus(r);
-                                    return status.type !== 'submitted';
-                                  })
-                                  .map(r => {
-                                    const cycle = r.cycle?.toLowerCase() || "";
-                                    const deadline = r.deadline?.toLowerCase() || "";
-                                    const isPeriodic = 
-                                      cycle.includes("tuần") || 
-                                      cycle.includes("tháng") || 
-                                      cycle.includes("quý") || 
-                                      cycle.includes("năm") || 
-                                      cycle.includes("6 tháng") ||
-                                      deadline.includes("hàng tháng") || 
-                                      deadline.includes("thứ");
-                                    
-                                    if (isPeriodic) {
-                                      return (
-                                        <option key={r.id} value={r.id} className="text-gray-600">
-                                          ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""}
-                                        </option>
-                                      );
-                                    }
-                                    
-                                    return (
-                                      <option key={r.id} value={r.id} className="text-gray-600">
-                                        ⚪ {r.content} {r.directingDocument ? `[VB: ${r.directingDocument}]` : ""} (chưa báo cáo)
-                                      </option>
-                                    );
-                                  });
-                              })()
-                            ) : (
-                              <option disabled>Không có yêu cầu báo cáo nào cho đơn vị này</option>
+                            <span className="truncate pr-4">
+                              {selectedReportId 
+                                ? `⚪ ${reports.find(r => r.id === selectedReportId)?.content}`
+                                : "-- Chọn nội dung báo cáo --"}
+                            </span>
+                            <ChevronRight className={`w-5 h-5 text-gray-400 transition-transform ${isReportDropdownOpen ? 'rotate-90' : ''}`} />
+                          </button>
+
+                          <AnimatePresence>
+                            {isReportDropdownOpen && (
+                              <motion.div
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                className="absolute z-50 left-0 right-0 mt-2 bg-white border border-gray-200 rounded-2xl shadow-xl overflow-hidden"
+                              >
+                                <div className="p-3 border-b border-gray-100">
+                                  <div className="relative">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                                    <input
+                                      type="text"
+                                      placeholder="Tìm kiếm nội dung..."
+                                      className="w-full bg-gray-50 border border-gray-200 rounded-lg pl-9 pr-8 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                      value={reportSearchQuery}
+                                      onChange={(e) => setReportSearchQuery(e.target.value)}
+                                      autoFocus
+                                    />
+                                    {reportSearchQuery && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setReportSearchQuery("")}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-gray-200 rounded-full"
+                                      >
+                                        <X className="w-3 h-3 text-gray-500" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="max-h-[300px] overflow-y-auto">
+                                  {reports.length > 0 ? (
+                                    (() => {
+                                      const seen = new Set();
+                                      const filteredReports = reports
+                                        .filter(r => r && r.content)
+                                        .filter(r => {
+                                          if (seen.has(r.content)) return false;
+                                          seen.add(r.content);
+                                          const status = getReportStatus(r);
+                                          if (status.type === 'submitted') return false;
+                                          
+                                          if (!reportSearchQuery) return true;
+                                          return r.content.toLowerCase().includes(reportSearchQuery.toLowerCase()) ||
+                                                 (r.directingDocument && r.directingDocument.toLowerCase().includes(reportSearchQuery.toLowerCase()));
+                                        });
+
+                                      if (filteredReports.length === 0) {
+                                        return <div className="p-4 text-center text-gray-500 text-sm">Không tìm thấy nội dung phù hợp</div>;
+                                      }
+
+                                      return filteredReports.map(r => {
+                                        const cycle = r.cycle?.toLowerCase() || "";
+                                        const deadline = r.deadline?.toLowerCase() || "";
+                                        const isPeriodic = 
+                                          cycle.includes("tuần") || 
+                                          cycle.includes("tháng") || 
+                                          cycle.includes("quý") || 
+                                          cycle.includes("năm") || 
+                                          cycle.includes("6 tháng") ||
+                                          deadline.includes("hàng tháng") || 
+                                          deadline.includes("thứ");
+                                        
+                                        return (
+                                          <button
+                                            key={r.id}
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedReportId(r.id);
+                                              setIsReportDropdownOpen(false);
+                                              setReportSearchQuery("");
+                                            }}
+                                            className="w-full text-left px-4 py-3 hover:bg-emerald-50 transition-colors border-b border-gray-50 last:border-0 flex items-start gap-3"
+                                          >
+                                            <span className="mt-1 flex-shrink-0">⚪</span>
+                                            <div className="flex flex-col">
+                                              <span className="text-sm text-gray-700 leading-relaxed whitespace-normal">
+                                                {r.content}
+                                              </span>
+                                              {r.directingDocument && (
+                                                <span className="text-[10px] font-bold text-blue-600 mt-1">
+                                                  VB: {r.directingDocument}
+                                                </span>
+                                              )}
+                                              {!isPeriodic && (
+                                                <span className="text-[10px] text-gray-400 italic mt-0.5">
+                                                  (chưa báo cáo)
+                                                </span>
+                                              )}
+                                            </div>
+                                          </button>
+                                        );
+                                      });
+                                    })()
+                                  ) : (
+                                    <div className="p-4 text-center text-gray-500 text-sm">Không có yêu cầu báo cáo nào</div>
+                                  )}
+                                </div>
+                              </motion.div>
                             )}
-                          </select>
-                          <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
-                            <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
-                          </div>
+                          </AnimatePresence>
                         </div>
                       </div>
 
