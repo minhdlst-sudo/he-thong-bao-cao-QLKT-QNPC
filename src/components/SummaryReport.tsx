@@ -24,10 +24,24 @@ interface SummaryReportProps {
 }
 
 export default function SummaryReport({ history, allReports, units, loading, currentUserUnit, checkIsLate, formatDate }: SummaryReportProps) {
+  // Helper to get current week number
+  const getCurrentWeekNumber = () => {
+    const now = new Date();
+    const oneJan = new Date(now.getFullYear(), 0, 1);
+    const numberOfDays = Math.floor((now.getTime() - oneJan.getTime()) / (24 * 60 * 60 * 1000));
+    const result = Math.ceil((now.getDay() + 1 + numberOfDays) / 7);
+    return result.toString().padStart(2, '0');
+  };
+
+  // Helper to get current month string
+  const getCurrentMonthString = () => {
+    return (new Date().getMonth() + 1).toString().padStart(2, '0');
+  };
+
   const [statusFilter, setStatusFilter] = React.useState<"Tất cả" | "Chưa báo cáo" | "Đúng hạn" | "Trễ hạn">("Tất cả");
   const [filter, setFilter] = React.useState<"Tất cả" | "Tuần" | "Tháng" | "Khác">("Tất cả");
-  const [selectedWeek, setSelectedWeek] = React.useState("");
-  const [selectedMonth, setSelectedMonth] = React.useState("");
+  const [selectedWeek, setSelectedWeek] = React.useState(getCurrentWeekNumber());
+  const [selectedMonth, setSelectedMonth] = React.useState(getCurrentMonthString());
   const [selectedOtherReport, setSelectedOtherReport] = React.useState("");
   const [selectedPeriodicReport, setSelectedPeriodicReport] = React.useState("");
   const [isPeriodicDropdownOpen, setIsPeriodicDropdownOpen] = React.useState(false);
