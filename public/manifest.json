@@ -1,7 +1,12 @@
 {
-  "short_name": "Báo cáo",
-  "name": "Hệ thống Báo cáo Định kỳ",
+  "short_name": "BC QLKT",
+  "name": "BC QLKT - Quản lý Kỹ thuật",
   "icons": [
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any"
+    },
     {
       "src": "/icon-192.png",
       "type": "image/png",
