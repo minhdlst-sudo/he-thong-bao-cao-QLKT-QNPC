@@ -308,12 +308,28 @@ export default function App() {
     }
   }, [currentView]);
 
+  const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout = 30000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      return response;
+    } catch (error) {
+      clearTimeout(id);
+      throw error;
+    }
+  };
+
   const fetchUnits = async () => {
     setIsLoadingUnits(true);
     setUnitsError(null);
     console.log("Fetching units from /api/units...");
     try {
-      const response = await fetch('/api/units');
+      const response = await fetchWithTimeout('/api/units');
       console.log("Units response status:", response.status);
       
       if (!response.ok) {
@@ -345,62 +361,64 @@ export default function App() {
   };
 
   const fetchData = async () => {
+    if (!selectedUnit) return;
     setLoading(true);
     try {
-      const [reportsRes, submissionsRes, historyRes, allReportsRes, allHistoryRes] = await Promise.all([
-        fetch(`/api/reports?unitName=${encodeURIComponent(selectedUnit!)}`),
-        fetch(`/api/submissions?unitName=${encodeURIComponent(selectedUnit!)}`),
-        fetch(`/api/history?unitName=${encodeURIComponent(selectedUnit!)}`),
-        fetch("/api/all-reports"),
-        fetch("/api/all-history")
+      console.log(`Fetching data for unit: ${selectedUnit}`);
+      const [reportsRes, submissionsRes, historyRes] = await Promise.all([
+        fetchWithTimeout(`/api/reports?unitName=${encodeURIComponent(selectedUnit!)}`),
+        fetchWithTimeout(`/api/submissions?unitName=${encodeURIComponent(selectedUnit!)}`),
+        fetchWithTimeout(`/api/history?unitName=${encodeURIComponent(selectedUnit!)}`)
       ]);
       
-      if (!reportsRes.ok || !submissionsRes.ok || !historyRes.ok || !allReportsRes.ok || !allHistoryRes.ok) {
+      if (!reportsRes.ok || !submissionsRes.ok || !historyRes.ok) {
         const details = {
           reports: reportsRes.status,
           submissions: submissionsRes.status,
-          history: historyRes.status,
-          allReports: allReportsRes.status,
-          allHistory: allHistoryRes.status
+          history: historyRes.status
         };
         console.error("Fetch error details:", details);
-        
-        const failedEndpoints = Object.entries(details)
-          .filter(([_, status]) => status !== 200)
-          .map(([name, status]) => `${name} (${status})`)
-          .join(", ");
-          
-        throw new Error(`Lỗi khi tải dữ liệu từ máy chủ: ${failedEndpoints}`);
+        throw new Error(`Lỗi khi tải dữ liệu đơn vị (${reportsRes.status}/${submissionsRes.status}/${historyRes.status})`);
       }
 
-      const reportsData = await reportsRes.json();
-      const submissionsData = await submissionsRes.json();
-      const historyData = await historyRes.json();
-      const allReportsData = await allReportsRes.json();
-      const allHistoryData = await allHistoryRes.json();
+      const [reportsData, submissionsData, historyData] = await Promise.all([
+        reportsRes.json(),
+        submissionsRes.json(),
+        historyRes.json()
+      ]);
       
       setReports(reportsData);
       setSubmissions(submissionsData);
       setHistory(historyData);
-      setAllReports(allReportsData);
-      setAllHistory(allHistoryData);
-    } catch (error) {
+      
+      // Also fetch all reports/history if in summary view
+      if (currentView === "summary" || currentView === "manage-reports") {
+        fetchAllHistory();
+        fetchAllReports();
+      }
+    } catch (error: any) {
       console.error("Error fetching data:", error);
-      setMessage({ type: 'error', text: "Lỗi khi tải dữ liệu từ máy chủ. Vui lòng thử lại sau." });
+      const errorMsg = error.name === 'AbortError' ? "Yêu cầu quá hạn (timeout). Vui lòng thử lại." : "Lỗi kết nối máy chủ. Vui lòng kiểm tra mạng.";
+      setMessage({ type: 'error', text: errorMsg });
     } finally {
       setLoading(false);
     }
   };
 
   const fetchAllHistory = async () => {
+    if (summaryLoading) return;
     setSummaryLoading(true);
     try {
-      const res = await fetch("/api/all-history");
+      console.log("Fetching all history...");
+      const res = await fetchWithTimeout("/api/all-history");
       if (res.ok) {
         const data = await res.json();
         setAllHistory(data);
+        console.log(`Fetched ${data.length} history items`);
+      } else {
+        console.error(`Error fetching all history: ${res.status}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error fetching all history:", error);
     } finally {
       setSummaryLoading(false);
@@ -409,22 +427,32 @@ export default function App() {
 
   const fetchAllReports = async () => {
     try {
-      const res = await fetch("/api/all-reports");
+      console.log("Fetching all reports...");
+      const res = await fetchWithTimeout("/api/all-reports");
       if (res.ok) {
         const data = await res.json();
         setAllReports(data);
+        console.log(`Fetched ${data.length} report definitions`);
+      } else {
+        console.error(`Error fetching all reports: ${res.status}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error fetching all reports:", error);
     }
   };
 
   const refreshDefinitions = async () => {
     setLoading(true);
-    await fetch("/api/refresh-definitions", { method: "POST" });
-    await fetchData();
-    if (currentView === "summary") {
-      fetchAllReports();
+    try {
+      await fetchWithTimeout("/api/refresh-definitions", { method: "POST" });
+      await fetchData();
+      if (currentView === "summary" || currentView === "manage-reports") {
+        await Promise.all([fetchAllHistory(), fetchAllReports()]);
+      }
+    } catch (error) {
+      console.error("Error refreshing definitions:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -491,7 +519,7 @@ export default function App() {
     setSubmitting(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/submissions", {
+      const res = await fetchWithTimeout("/api/submissions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

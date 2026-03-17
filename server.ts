@@ -110,7 +110,8 @@ async function getGoogleSheet() {
 
 // Simple memory cache for API responses
 const apiCache = new Map<string, { data: any, timestamp: number }>();
-const API_CACHE_DURATION = 60 * 1000; // 1 minute
+const API_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const pendingRequests = new Map<string, Promise<any>>();
 
 function getCachedData(key: string) {
   const cached = apiCache.get(key);
@@ -122,6 +123,26 @@ function getCachedData(key: string) {
 
 function setCachedData(key: string, data: any) {
   apiCache.set(key, { data, timestamp: Date.now() });
+}
+
+async function coalesceRequest(key: string, fetchFn: () => Promise<any>) {
+  const cached = getCachedData(key);
+  if (cached) return cached;
+
+  const pending = pendingRequests.get(key);
+  if (pending) return pending;
+
+  const promise = fetchFn().then(data => {
+    setCachedData(key, data);
+    pendingRequests.delete(key);
+    return data;
+  }).catch(err => {
+    pendingRequests.delete(key);
+    throw err;
+  });
+
+  pendingRequests.set(key, promise);
+  return promise;
 }
 
 async function fetchReportDefinitions() {
@@ -254,24 +275,25 @@ app.post("/api/refresh-definitions", async (req, res) => {
     res.json(result);
   });
 
-  // API Routes
-  app.get("/api/all-reports", async (req, res) => {
-    const cacheKey = "all-reports";
-    const cached = getCachedData(cacheKey);
-    if (cached) return res.json(cached);
-
-    if (!db) return res.status(500).json({ error: "DB not initialized" });
-    try {
+// API Routes
+app.get("/api/all-reports", async (req, res) => {
+  console.log("GET /api/all-reports requested");
+  const cacheKey = "all-reports";
+  
+  try {
+    const reports = await coalesceRequest(cacheKey, async () => {
+      if (!db) throw new Error("DB not initialized");
       const snapshot = await db.collection("report_definitions").get();
-      const reports = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
-      
-      setCachedData(cacheKey, reports);
-      res.json(reports);
-    } catch (error: any) {
-      console.error("Error fetching all-reports:", error);
-      res.status(500).json({ error: error.message });
-    }
-  });
+      return snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    });
+    
+    console.log(`Returning ${reports.length} report definitions`);
+    res.json(reports);
+  } catch (error: any) {
+    console.error("Error fetching all-reports:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
   app.get("/api/reports", async (req, res) => {
     if (!db) return res.status(500).json({ error: "DB not initialized" });
@@ -325,52 +347,51 @@ app.post("/api/refresh-definitions", async (req, res) => {
 
   app.get("/api/form-metadata", async (req, res) => {
     const cacheKey = "form-metadata";
-    const cached = getCachedData(cacheKey);
-    if (cached) return res.json(cached);
-
+    
     try {
-      const doc = await getGoogleSheet();
-      if (!doc) throw new Error("Could not connect to Google Sheets");
-      
-      const sheet = doc.sheetsByTitle["Thu vien"];
-      if (!sheet) throw new Error("Sheet 'Thu vien' not found");
+      const result = await coalesceRequest(cacheKey, async () => {
+        const doc = await getGoogleSheet();
+        if (!doc) throw new Error("Could not connect to Google Sheets");
+        
+        const sheet = doc.sheetsByTitle["Thu vien"];
+        if (!sheet) throw new Error("Sheet 'Thu vien' not found");
 
-      await sheet.loadCells({
-        startRowIndex: 0,
-        endRowIndex: 200,
-        startColumnIndex: 0,
-        endColumnIndex: 6
+        await sheet.loadCells({
+          startRowIndex: 0,
+          endRowIndex: 200,
+          startColumnIndex: 0,
+          endColumnIndex: 6
+        });
+
+        const classifications: string[] = [];
+        const specialists: string[] = [];
+        const cycles: string[] = [];
+        const deadlines: string[] = [];
+        const units: string[] = [];
+
+        for (let i = 1; i < 200; i++) {
+          const classCell = sheet.getCell(i, 0);
+          const specCell = sheet.getCell(i, 1);
+          const cycleCell = sheet.getCell(i, 3);
+          const deadlineCell = sheet.getCell(i, 5);
+          const unitCell = sheet.getCell(i, 4);
+
+          if (classCell.value) classifications.push(String(classCell.value).trim());
+          if (specCell.value) specialists.push(String(specCell.value).trim());
+          if (cycleCell.value) cycles.push(String(cycleCell.value).trim());
+          if (deadlineCell.value) deadlines.push(String(deadlineCell.value).trim());
+          if (unitCell.value) units.push(String(unitCell.value).trim());
+        }
+
+        return {
+          classifications: Array.from(new Set(classifications)),
+          specialists: Array.from(new Set(specialists)),
+          cycles: Array.from(new Set(cycles)),
+          deadlines: Array.from(new Set(deadlines)),
+          units: Array.from(new Set(units))
+        };
       });
 
-      const classifications: string[] = [];
-      const specialists: string[] = [];
-      const cycles: string[] = [];
-      const deadlines: string[] = [];
-      const units: string[] = [];
-
-      for (let i = 1; i < 200; i++) {
-        const classCell = sheet.getCell(i, 0);
-        const specCell = sheet.getCell(i, 1);
-        const cycleCell = sheet.getCell(i, 3);
-        const deadlineCell = sheet.getCell(i, 5);
-        const unitCell = sheet.getCell(i, 4);
-
-        if (classCell.value) classifications.push(String(classCell.value).trim());
-        if (specCell.value) specialists.push(String(specCell.value).trim());
-        if (cycleCell.value) cycles.push(String(cycleCell.value).trim());
-        if (deadlineCell.value) deadlines.push(String(deadlineCell.value).trim());
-        if (unitCell.value) units.push(String(unitCell.value).trim());
-      }
-
-      const result = {
-        classifications: Array.from(new Set(classifications)),
-        specialists: Array.from(new Set(specialists)),
-        cycles: Array.from(new Set(cycles)),
-        deadlines: Array.from(new Set(deadlines)),
-        units: Array.from(new Set(units))
-      };
-
-      setCachedData(cacheKey, result);
       res.json(result);
     } catch (error) {
       console.error("Error fetching form metadata:", error);
@@ -380,84 +401,87 @@ app.post("/api/refresh-definitions", async (req, res) => {
 
   app.get("/api/units", async (req, res) => {
     const cacheKey = "units";
-    const cached = getCachedData(cacheKey);
-    if (cached) return res.json(cached);
-
-    console.log("Fetching units from Google Sheets...");
+    console.log("GET /api/units requested");
+    
     try {
-      const doc = await getGoogleSheet();
-      if (!doc) {
-        console.error("Failed to connect to Google Sheets in /api/units");
-        throw new Error("Could not connect to Google Sheets");
-      }
-      
-      const sheet = doc.sheetsByTitle["Thu vien"] || doc.sheetsByTitle["Thư viện"];
-      if (!sheet) {
-        console.error("Sheet 'Thu vien' or 'Thư viện' not found. Available sheets:", doc.sheetsByIndex.map(s => s.title));
-        throw new Error("Sheet 'Thu vien' not found");
-      }
-
-      console.log(`Found sheet: ${sheet.title}. Column count: ${sheet.columnCount}`);
-
-      // Load header row to find the correct column
-      await sheet.loadCells('1:1');
-      let unitColIndex = 4; // Default to column E
-      const headers = [];
-      for (let col = 0; col < sheet.columnCount; col++) {
-        const headerValue = sheet.getCell(0, col).value;
-        const header = String(headerValue || "").toLowerCase().trim();
-        headers.push(header);
-        if (header.includes("đơn vị") || header.includes("don vi")) {
-          unitColIndex = col;
-          console.log(`Found 'Đơn vị' column at index ${col} (Header: "${headerValue}")`);
-          break;
+      const result = await coalesceRequest(cacheKey, async () => {
+        const doc = await getGoogleSheet();
+        if (!doc) {
+          console.error("Failed to connect to Google Sheets in /api/units");
+          throw new Error("Could not connect to Google Sheets");
         }
-      }
+        
+        const sheet = doc.sheetsByTitle["Thu vien"] || doc.sheetsByTitle["Thư viện"];
+        if (!sheet) {
+          console.error("Sheet 'Thu vien' or 'Thư viện' not found. Available sheets:", doc.sheetsByIndex.map(s => s.title));
+          throw new Error("Sheet 'Thu vien' not found");
+        }
 
-      if (unitColIndex === 4 && !headers[4]?.includes("đơn vị")) {
-        console.warn("Could not find 'Đơn vị' column by name. Using default index 4. Headers found:", headers);
-      }
+        console.log(`Found sheet: ${sheet.title}. Column count: ${sheet.columnCount}`);
 
-      // Load cells for the identified column
-      await sheet.loadCells({
-        startRowIndex: 0,
-        endRowIndex: 200,
-        startColumnIndex: unitColIndex,
-        endColumnIndex: unitColIndex + 1
+        // Load header row to find the correct column
+        await sheet.loadCells('1:1');
+        let unitColIndex = 4; // Default to column E
+        const headers = [];
+        for (let col = 0; col < sheet.columnCount; col++) {
+          const headerValue = sheet.getCell(0, col).value;
+          const header = String(headerValue || "").toLowerCase().trim();
+          headers.push(header);
+          if (header.includes("đơn vị") || header.includes("don vi")) {
+            unitColIndex = col;
+            console.log(`Found 'Đơn vị' column at index ${col} (Header: "${headerValue}")`);
+            break;
+          }
+        }
+
+        if (unitColIndex === 4 && !headers[4]?.includes("đơn vị")) {
+          console.warn("Could not find 'Đơn vị' column by name. Using default index 4. Headers found:", headers);
+        }
+
+        // Load cells for the identified column
+        await sheet.loadCells({
+          startRowIndex: 0,
+          endRowIndex: 200,
+          startColumnIndex: unitColIndex,
+          endColumnIndex: unitColIndex + 1
+        });
+
+        const units: string[] = [];
+        for (let i = 1; i < 200; i++) {
+          const cell = sheet.getCell(i, unitColIndex);
+          if (cell.value) {
+            units.push(String(cell.value).trim());
+          }
+        }
+
+        return Array.from(new Set(units));
       });
 
-      const units: string[] = [];
-      for (let i = 1; i < 200; i++) {
-        const cell = sheet.getCell(i, unitColIndex);
-        if (cell.value) {
-          units.push(String(cell.value).trim());
-        }
-      }
-
-      const result = Array.from(new Set(units));
-      console.log(`Found ${result.length} unique units.`);
-      setCachedData(cacheKey, result);
-      res.json(result); // Return unique units
+      console.log(`Returning ${result.length} unique units.`);
+      res.json(result);
     } catch (error) {
       console.error("Error fetching units from Google Sheets:", error);
       res.status(500).json({ error: "Failed to fetch units" });
     }
   });
 
-  app.get("/api/all-history", async (req, res) => {
-    const cacheKey = "all-history";
-    const cached = getCachedData(cacheKey);
-    if (cached) return res.json(cached);
+app.get("/api/all-history", async (req, res) => {
+  console.log("GET /api/all-history requested");
+  const cacheKey = "all-history";
 
-    try {
+  try {
+    const history = await coalesceRequest(cacheKey, async () => {
       const doc = await getGoogleSheet();
       if (!doc) throw new Error("Could not connect to Google Sheets");
       
       const sheet = doc.sheetsByTitle["Lich su"];
       if (!sheet) throw new Error("Sheet 'Lich su' not found");
 
+      console.log("Fetching rows from 'Lich su' sheet...");
       const rows = await sheet.getRows();
-      const history = rows.map(row => ({
+      console.log(`Fetched ${rows.length} rows from 'Lich su'`);
+      
+      return rows.map(row => ({
         timestamp: row.get("Thời gian cập nhật"),
         unit: row.get("Đơn vị báo cáo"),
         content: row.get("Nội dung báo cáo"),
@@ -470,14 +494,15 @@ app.post("/api/refresh-definitions", async (req, res) => {
         dateSent: row.get("Ngày gửi báo cáo"),
         attachment: row.get("Link đính kèm")
       }));
+    });
 
-      setCachedData(cacheKey, history);
-      res.json(history);
-    } catch (error) {
-      console.error("Error fetching all history:", error);
-      res.status(500).json({ error: "Failed to fetch all history" });
-    }
-  });
+    console.log(`Returning ${history.length} history items`);
+    res.json(history);
+  } catch (error: any) {
+    console.error("Error fetching all history:", error);
+    res.status(500).json({ error: error.message || "Failed to fetch all history" });
+  }
+});
 
   app.get("/api/history", async (req, res) => {
     const { unitName } = req.query;
@@ -675,11 +700,9 @@ async function setupVite() {
 
 setupVite().catch(err => console.error("Vite setup failed:", err));
 
-if (process.env.NODE_ENV !== "production") {
-  const PORT = 3000;
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
+const PORT = 3000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
+});
 
 export default app;
