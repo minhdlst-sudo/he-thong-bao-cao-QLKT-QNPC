@@ -514,6 +514,7 @@ export default function Evaluation({ onRefreshAll }: EvaluationProps) {
               filteredRows.map((row) => {
                 const isSelected = selectedRow?.rowNumber === row.rowNumber;
                 const hasRated = row.rating === "Đạt" || row.rating === "Chưa đạt";
+                const isLate = checkIsLate(row.dateSent, row.deadline, row.period, row.year);
                 
                 return (
                   <button
@@ -533,6 +534,15 @@ export default function Evaluation({ onRefreshAll }: EvaluationProps) {
                         <span className="text-[10px] font-bold text-gray-400">
                           {row.period}
                         </span>
+                        {isLate ? (
+                          <span className="text-[9px] font-extrabold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded-md border border-rose-100">
+                            Trễ hạn
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-extrabold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-100">
+                            Đúng hạn
+                          </span>
+                        )}
                         {row.rating === "Đạt" ? (
                           <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100/80 px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shrink-0 ml-auto">
                             <CheckCircle2 className="w-2.5 h-2.5" /> Đạt
@@ -628,7 +638,16 @@ export default function Evaluation({ onRefreshAll }: EvaluationProps) {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-gray-200/60">
                     <div>
                       <p className="text-[10px] font-extrabold uppercase tracking-wider text-gray-400 mb-0.5">Ngày nộp báo cáo</p>
-                      <p className="text-sm font-semibold text-gray-700">{selectedRow.dateSent || "Chưa có"}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-gray-700">{selectedRow.dateSent || "Chưa có"}</p>
+                        {selectedRow.dateSent && selectedRow.deadline && (
+                          checkIsLate(selectedRow.dateSent, selectedRow.deadline, selectedRow.period, selectedRow.year) ? (
+                            <span className="text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">Trễ hạn</span>
+                          ) : (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">Đúng hạn</span>
+                          )
+                        )}
+                      </div>
                     </div>
                     <div>
                       <p className="text-[10px] font-extrabold uppercase tracking-wider text-gray-400 mb-0.5">Thời hạn quy định</p>
