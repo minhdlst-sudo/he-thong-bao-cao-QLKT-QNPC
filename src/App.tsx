@@ -23,6 +23,7 @@ import "react-datepicker/dist/react-datepicker.css";
 import { ReportDefinition, ReportSubmission } from "./types";
 import SummaryReport from "./components/SummaryReport";
 import ManageReports from "./components/ManageReports";
+import Evaluation from "./components/Evaluation";
 import { auth, db } from "./firebase";
 import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { doc, getDocFromCache, getDocFromServer } from "firebase/firestore";
@@ -45,7 +46,7 @@ export default function App() {
   const [selectedReportId, setSelectedReportId] = useState<string>("");
   const selectedReport = reports.find(r => r.id === selectedReportId);
   
-  const [currentView, setCurrentView] = useState<"dashboard" | "summary" | "manage-reports">("dashboard");
+  const [currentView, setCurrentView] = useState<"dashboard" | "summary" | "manage-reports" | "evaluation">("dashboard");
   const [allHistory, setAllHistory] = useState<any[]>([]);
   const [allReports, setAllReports] = useState<ReportDefinition[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -302,7 +303,7 @@ export default function App() {
   }, [selectedReport]);
 
   useEffect(() => {
-    if (currentView === "summary" || currentView === "manage-reports") {
+    if (currentView === "summary" || currentView === "manage-reports" || currentView === "evaluation") {
       fetchAllHistory();
       fetchAllReports();
     }
@@ -446,7 +447,7 @@ export default function App() {
     try {
       await fetchWithTimeout("/api/refresh-definitions", { method: "POST" });
       await fetchData();
-      if (currentView === "summary" || currentView === "manage-reports") {
+      if (currentView === "summary" || currentView === "manage-reports" || currentView === "evaluation") {
         await Promise.all([fetchAllHistory(), fetchAllReports()]);
       }
     } catch (error) {
@@ -791,6 +792,12 @@ export default function App() {
                 className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'summary' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
               >
                 Tất cả đơn vị
+              </button>
+              <button 
+                onClick={() => setCurrentView("evaluation")}
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${currentView === 'evaluation' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                Đánh giá
               </button>
               {isAdmin && (
                 <button 
@@ -1261,6 +1268,20 @@ export default function App() {
                 checkIsLate={checkIsLate}
                 formatDate={formatDate}
               />
+            </motion.div>
+          ) : currentView === "evaluation" ? (
+            <motion.div
+              key="evaluation"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="mb-8">
+                <h2 className="text-2xl font-bold text-gray-900">Đánh giá chất lượng báo cáo</h2>
+                <p className="text-gray-500">Xem chi tiết và đánh giá chất lượng các báo cáo từ các đơn vị gửi về.</p>
+              </div>
+              <Evaluation onRefreshAll={refreshDefinitions} />
             </motion.div>
           ) : (
             <motion.div

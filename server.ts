@@ -551,6 +551,152 @@ app.get("/api/all-history", async (req, res) => {
     }
   });
 
+  // Helpers for specialist verification and list loading
+  async function getSpecialists() {
+    const doc = await getGoogleSheet();
+    if (!doc) return [];
+    
+    const sheet = doc.sheetsByTitle["Thu vien"] || doc.sheetsByTitle["Thư viện"];
+    if (!sheet) return [];
+
+    await sheet.loadCells("A1:C200");
+    
+    const specialists = new Set<string>();
+    for (let i = 1; i < 200; i++) {
+      const specCell = sheet.getCell(i, 1); // Column B is Chuyên viên
+      if (specCell.value) {
+        specialists.add(String(specCell.value).trim());
+      }
+    }
+    return Array.from(specialists);
+  }
+
+  async function verifySpecialistPassword(specialist: string, pass: string) {
+    const doc = await getGoogleSheet();
+    if (!doc) throw new Error("Could not connect to Google Sheets");
+    
+    const sheet = doc.sheetsByTitle["Thu vien"] || doc.sheetsByTitle["Thư viện"];
+    if (!sheet) throw new Error("Sheet 'Thu vien' not found");
+
+    await sheet.loadCells("A1:C200");
+    
+    for (let i = 1; i < 200; i++) {
+      const specCell = sheet.getCell(i, 1); // Column B is Chuyên viên
+      const passCell = sheet.getCell(i, 2); // Column C is Mật khẩu/Password
+      if (specCell.value && String(specCell.value).trim().toLowerCase() === specialist.trim().toLowerCase()) {
+        const storedPass = passCell.value ? String(passCell.value).trim() : "";
+        return storedPass === pass.trim();
+      }
+    }
+    return false;
+  }
+
+  // Endpoints for "Đánh giá" feature
+  app.get("/api/cap-nhat-rows", async (req, res) => {
+    try {
+      const doc = await getGoogleSheet();
+      if (!doc) throw new Error("Could not connect to Google Sheets");
+      
+      const sheet = doc.sheetsById["925215305"] || doc.sheetsByTitle["cap nhat"];
+      if (!sheet) throw new Error("Sheet 'cap nhat' not found");
+
+      const rows = await sheet.getRows();
+      const data = rows.map((row) => ({
+        rowNumber: row.rowNumber,
+        timestamp: row.get("Thời gian cập nhật") || row.get("Timestamp") || "",
+        unit: row.get("Đơn vị báo cáo") || row.get("Đơn vị") || row.get("Don vi") || "",
+        content: row.get("Nội dung báo cáo") || row.get("Nội dung") || row.get("Noi dung") || "",
+        classification: row.get("Phân loại") || row.get("Phan loai") || "",
+        specialist: row.get("Phụ trách") || row.get("Chuyên viên") || row.get("Người phụ trách") || row.get("Phu trach") || "",
+        cycle: row.get("Chu kỳ") || row.get("Chu ky") || "",
+        deadline: row.get("Thời hạn") || row.get("Thoi han") || "",
+        period: row.get("Giá trị báo cáo") || row.get("Giá trị") || row.get("Gia tri") || "",
+        year: row.get("Năm") || row.get("Nam") || "",
+        dateSent: row.get("Ngày gửi báo cáo") || row.get("Ngày gửi") || row.get("Ngay gui") || "",
+        attachment: row.get("Link đính kèm") || row.get("Link") || "",
+        rating: row.get("Đánh giá") || row.get("Mức đánh giá") || "",
+        note: row.get("Ghi chú đánh giá") || row.get("Ghi chú") || ""
+      }));
+
+      res.json(data);
+    } catch (error: any) {
+      console.error("Error fetching cap-nhat rows:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch cap-nhat rows" });
+    }
+  });
+
+  app.get("/api/specialists-list", async (req, res) => {
+    try {
+      const specs = await getSpecialists();
+      res.json(specs);
+    } catch (error: any) {
+      console.error("Error fetching specialists-list:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch specialists list" });
+    }
+  });
+
+  app.post("/api/update-evaluation", async (req, res) => {
+    const { rowNumber, specialist, password, rating, note } = req.body;
+    if (!rowNumber || !specialist || !password || !rating) {
+      return res.status(400).json({ success: false, error: "Thiếu thông tin đánh giá bắt buộc" });
+    }
+
+    try {
+      const isVerified = await verifySpecialistPassword(specialist, password);
+      if (!isVerified) {
+        return res.status(401).json({ success: false, error: "Mật khẩu của chuyên viên không đúng!" });
+      }
+
+      const doc = await getGoogleSheet();
+      if (!doc) throw new Error("Could not connect to Google Sheets");
+      
+      const sheet = doc.sheetsById["925215305"] || doc.sheetsByTitle["cap nhat"];
+      if (!sheet) throw new Error("Sheet 'cap nhat' not found");
+
+      const rows = await sheet.getRows();
+      const row = rows.find(r => r.rowNumber === rowNumber);
+      if (!row) {
+        return res.status(404).json({ success: false, error: "Không tìm thấy dòng báo cáo tương ứng trong Google Sheet" });
+      }
+
+      const rowSpecialist = (row.get("Phụ trách") || row.get("Chuyên viên") || row.get("Người phụ trách") || row.get("Phu trach") || "").toString().trim();
+      if (rowSpecialist.toLowerCase() !== specialist.toLowerCase()) {
+        return res.status(403).json({ 
+          success: false, 
+          error: `Báo cáo này do chuyên viên '${rowSpecialist}' phụ trách. Bạn không thể dùng tài khoản '${specialist}' để đánh giá.` 
+        });
+      }
+
+      await sheet.loadHeaderRow();
+      const headers = sheet.headerValues;
+
+      const findHeader = (index: number, possibleNames: string[]) => {
+        for (const name of possibleNames) {
+          if (headers.includes(name)) return name;
+        }
+        for (const name of possibleNames) {
+          const found = headers.find((h: any) => h && h.toLowerCase().trim() === name.toLowerCase().trim());
+          if (found) return found;
+        }
+        return headers[index] || "";
+      };
+
+      const ratingHeader = findHeader(10, ["Đánh giá", "Mức đánh giá", "Đánh giá chất lượng", "Danh gia"]);
+      const noteHeader = findHeader(11, ["Ghi chú đánh giá", "Ghi chú", "Ghi chu"]);
+
+      row.set(ratingHeader, rating);
+      row.set(noteHeader, note || "");
+      await row.save();
+
+      apiCache.clear();
+
+      res.json({ success: true, message: "Cập nhật đánh giá chất lượng thành công!" });
+    } catch (error: any) {
+      console.error("Error in update-evaluation API:", error);
+      res.status(500).json({ success: false, error: error.message || "Lỗi máy chủ khi cập nhật đánh giá" });
+    }
+  });
+
   app.post("/api/submissions", async (req, res) => {
     if (!db) return res.status(500).json({ error: "DB not initialized" });
     const { reportDefinitionId, unitName, dateSent, attachmentLink, period } = req.body;
